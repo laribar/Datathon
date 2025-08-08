@@ -1,0 +1,8 @@
+# Projeto Datathon - Match de Currículos e Vagas
+
+Este projeto utiliza técnicas de Machine Learning e Deep Learning para encontrar o melhor match entre candidatos e vagas.
+
+## Estrutura do projeto
+- `data/` → Contém os arquivos JSON com dados de vagas, candidatos e prospecções.
+- `notebooks/` → Notebooks para exploração e prototipagem.
+- `src/` → Código-fonte (pré-processamento, treino e predição).

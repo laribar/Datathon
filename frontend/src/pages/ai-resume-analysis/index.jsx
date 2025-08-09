@@ -10,6 +10,7 @@ import ResumeViewer from './components/ResumeViewer';
 import SkillsMatrix from './components/SkillsMatrix';
 import RecommendationEngine from './components/RecommendationEngine';
 import ActionButtons from './components/ActionButtons';
+import MatchPanel from "./components/MatchPanel";
 
 const AIResumeAnalysis = () => {
   const [currentLanguage, setCurrentLanguage] = useState('pt');
@@ -42,124 +43,51 @@ const AIResumeAnalysis = () => {
     summary: `Desenvolvedora frontend com 6 anos de experiência em React e TypeScript. Especialista em arquitetura de componentes, otimização de performance e liderança técnica. Experiência em projetos de grande escala e mentoria de equipes.`,
     skills: ["React", "TypeScript", "JavaScript", "Node.js", "GraphQL", "Jest", "CSS", "HTML", "Git", "Docker", "AWS"],
     experience: [
-      {
-        position: "Desenvolvedora Frontend Sênior",
-        company: "TechCorp Brasil",
-        duration: "2021 - Atual",
-        description: "Liderança técnica em projetos React, mentoria de 3 desenvolvedores júnior"
-      },
-      {
-        position: "Desenvolvedora Frontend Pleno",
-        company: "StartupXYZ",
-        duration: "2019 - 2021",
-        description: "Desenvolvimento de aplicações React com TypeScript e GraphQL"
-      },
-      {
-        position: "Desenvolvedora Frontend Júnior",
-        company: "WebSolutions",
-        duration: "2018 - 2019",
-        description: "Desenvolvimento de interfaces responsivas com React e CSS"
-      }
+      { position: "Desenvolvedora Frontend Sênior", company: "TechCorp Brasil", duration: "2021 - Atual", description: "Liderança técnica em projetos React, mentoria de 3 desenvolvedores júnior" },
+      { position: "Desenvolvedora Frontend Pleno", company: "StartupXYZ", duration: "2019 - 2021", description: "Desenvolvimento de aplicações React com TypeScript e GraphQL" },
+      { position: "Desenvolvedora Frontend Júnior", company: "WebSolutions", duration: "2018 - 2019", description: "Desenvolvimento de interfaces responsivas com React e CSS" }
     ],
     education: [
-      {
-        degree: "Bacharelado em Ciência da Computação",
-        institution: "Universidade de São Paulo",
-        year: "2018"
-      },
-      {
-        degree: "Certificação React Advanced",
-        institution: "Meta",
-        year: "2022"
-      }
+      { degree: "Bacharelado em Ciência da Computação", institution: "Universidade de São Paulo", year: "2018" },
+      { degree: "Certificação React Advanced", institution: "Meta", year: "2022" }
     ]
   };
 
-  // Mock compatibility analysis
-  const compatibilityScore = 87;
-  const scoreBreakdown = {
-    technical: 92,
-    experience: 85,
-    education: 84
-  };
+  // Score controlado pela página (inicia em 87% até receber resultado real)
+  const [compatibilityScore, setCompatibilityScore] = useState(87);
+    const [breakdown, setBreakdown] = useState({
+      technical: 92,
+      experience: 85,
+      education: 84,
+    });
+    const [analysisTime, setAnalysisTime] = useState(2.3); // segundos (valor inicial)
 
-  // Keywords analysis
+  const scoreBreakdown = { technical: 92, experience: 85, education: 84 };
+
   const matchedKeywords = ["react", "typescript", "javascript", "node.js", "graphql", "jest", "css", "html", "git"];
   const missingKeywords = ["agile"];
   const highlightedKeywords = [...matchedKeywords];
 
-  // Technical skills radar data
   const technicalSkillsData = [
-    {
-      name: "React",
-      score: 95,
-      level: "Expert",
-      experience: "6 anos",
-      description: "Desenvolvimento avançado com hooks, context, e otimização",
-      required: true
-    },
-    {
-      name: "TypeScript",
-      score: 90,
-      level: "Avançado",
-      experience: "4 anos",
-      description: "Tipagem avançada, generics, e arquitetura type-safe",
-      required: true
-    },
-    {
-      name: "JavaScript",
-      score: 88,
-      level: "Avançado",
-      experience: "6 anos",
-      description: "ES6+, async/await, e padrões modernos",
-      required: true
-    },
-    {
-      name: "Node.js",
-      score: 75,
-      level: "Intermediário",
-      experience: "3 anos",
-      description: "APIs REST, Express, e integração com bancos de dados",
-      required: false
-    },
-    {
-      name: "GraphQL",
-      score: 80,
-      level: "Intermediário",
-      experience: "2 anos",
-      description: "Queries, mutations, e integração com Apollo Client",
-      required: false
-    },
-    {
-      name: "Testing",
-      score: 85,
-      level: "Avançado",
-      experience: "4 anos",
-      description: "Jest, React Testing Library, e TDD",
-      required: true
-    }
+    { name: "React", score: 95, level: "Expert", experience: "6 anos", description: "Desenvolvimento avançado com hooks, context, e otimização", required: true },
+    { name: "TypeScript", score: 90, level: "Avançado", experience: "4 anos", description: "Tipagem avançada, generics, e arquitetura type-safe", required: true },
+    { name: "JavaScript", score: 88, level: "Avançado", experience: "6 anos", description: "ES6+, async/await, e padrões modernos", required: true },
+    { name: "Node.js", score: 75, level: "Intermediário", experience: "3 anos", description: "APIs REST, Express, e integração com bancos de dados", required: false },
+    { name: "GraphQL", score: 80, level: "Intermediário", experience: "2 anos", description: "Queries, mutations, e integração com Apollo Client", required: false },
+    { name: "Testing", score: 85, level: "Avançado", experience: "4 anos", description: "Jest, React Testing Library, e TDD", required: true }
   ];
 
-  // Skills matrix data
   const requiredSkills = [
-    { name: "React", level: 85 },
-    { name: "TypeScript", level: 80 },
-    { name: "JavaScript", level: 75 },
-    { name: "Node.js", level: 60 },
-    { name: "GraphQL", level: 50 },
-    { name: "Jest", level: 70 }
+    { name: "React", level: 85 }, { name: "TypeScript", level: 80 }, { name: "JavaScript", level: 75 },
+    { name: "Node.js", level: 60 }, { name: "GraphQL", level: 50 }, { name: "Jest", level: 70 }
   ];
 
   const candidateSkills = [
-    { name: "React", level: 95, proficiency: "Expert" },
-    { name: "TypeScript", level: 90, proficiency: "Avançado" },
-    { name: "JavaScript", level: 88, proficiency: "Avançado" },
-    { name: "Node.js", level: 75, proficiency: "Intermediário" },
-    { name: "GraphQL", level: 80, proficiency: "Intermediário" },
-    { name: "Jest", level: 85, proficiency: "Avançado" }
+    { name: "React", level: 95, proficiency: "Expert" }, { name: "TypeScript", level: 90, proficiency: "Avançado" },
+    { name: "JavaScript", level: 88, proficiency: "Avançado" }, { name: "Node.js", level: 75, proficiency: "Intermediário" },
+    { name: "GraphQL", level: 80, proficiency: "Intermediário" }, { name: "Jest", level: 85, proficiency: "Avançado" }
   ];
 
-  // Recommendations data
   const recommendations = {
     overall: `Ana é uma candidata excepcional com forte compatibilidade técnica (87%). Suas habilidades em React e TypeScript excedem os requisitos, e sua experiência em liderança técnica é valiosa. Recomendo prosseguir com entrevista técnica focada em arquitetura e liderança.`
   };
@@ -177,21 +105,11 @@ const AIResumeAnalysis = () => {
     "Pode precisar de mentoria em GraphQL avançado"
   ];
 
-  // Action handlers
   const handleStatusChange = (newStatus) => {
     console.log(`Status changed to: ${newStatus}`);
-    // Here you would typically update the candidate status via API
   };
-
-  const handleScheduleInterview = () => {
-    console.log('Scheduling interview...');
-    // Here you would typically navigate to interview scheduling
-  };
-
-  const handleGenerateReport = () => {
-    console.log('Generating report...');
-    // Here you would typically generate and download a PDF report
-  };
+  const handleScheduleInterview = () => console.log('Scheduling interview...');
+  const handleGenerateReport = () => console.log('Generating report...');
 
   return (
     <div className="min-h-screen bg-background">
@@ -204,49 +122,25 @@ const AIResumeAnalysis = () => {
                 <Icon name="Brain" size={24} className="text-primary" />
                 <span className="text-xl font-bold text-foreground">AI Recruitment</span>
               </div>
-              
+
               <div className="hidden md:flex items-center gap-6">
-                <Link
-                  to="/job-posting-creation"
-                  className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  <Icon name="Plus" size={16} />
-                  Criar Vaga
+                <Link to="/job-posting-creation" className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors">
+                  <Icon name="Plus" size={16} /> Criar Vaga
                 </Link>
-                <Link
-                  to="/candidate-management"
-                  className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  <Icon name="Users" size={16} />
-                  Candidatos
+                <Link to="/candidate-management" className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors">
+                  <Icon name="Users" size={16} /> Candidatos
                 </Link>
-                <Link
-                  to="/ai-resume-analysis"
-                  className="flex items-center gap-2 px-3 py-2 text-sm text-primary font-medium border-b-2 border-primary"
-                >
-                  <Icon name="Brain" size={16} />
-                  Análise IA
+                <Link to="/ai-resume-analysis" className="flex items-center gap-2 px-3 py-2 text-sm text-primary font-medium border-b-2 border-primary">
+                  <Icon name="Brain" size={16} /> Análise IA
                 </Link>
-                <Link
-                  to="/video-interview-room"
-                  className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  <Icon name="Video" size={16} />
-                  Entrevistas
+                <Link to="/video-interview-room" className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors">
+                  <Icon name="Video" size={16} /> Entrevistas
                 </Link>
-                <Link
-                  to="/interview-transcription-analysis"
-                  className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  <Icon name="FileText" size={16} />
-                  Transcrições
+                <Link to="/interview-transcription-analysis" className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors">
+                  <Icon name="FileText" size={16} /> Transcrições
                 </Link>
-                <Link
-                  to="/recruitment-analytics-dashboard"
-                  className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  <Icon name="BarChart3" size={16} />
-                  Analytics
+                <Link to="/recruitment-analytics-dashboard" className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors">
+                  <Icon name="BarChart3" size={16} /> Analytics
                 </Link>
               </div>
             </div>
@@ -261,26 +155,47 @@ const AIResumeAnalysis = () => {
           </div>
         </div>
       </nav>
+
       {/* Main Content */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Header */}
         <div className="mb-8">
           <div className="flex items-center gap-3 mb-4">
-            <Button
-              variant="ghost"
-              size="sm"
-              iconName="ArrowLeft"
-              onClick={() => window.history?.back()}
-            />
+            <Button variant="ghost" size="sm" iconName="ArrowLeft" onClick={() => window.history?.back()} />
             <div>
               <h1 className="text-3xl font-bold text-foreground">Análise IA de Currículo</h1>
-              <p className="text-muted-foreground">
-                Análise detalhada usando algoritmos SBERT e LogReg para decisões baseadas em dados
-              </p>
+              <p className="text-muted-foreground">Análise detalhada usando algoritmos SBERT e LogReg para decisões baseadas em dados</p>
             </div>
           </div>
-          
-          <div className="flex items-center gap-4 text-sm text-muted-foreground">
+
+          {/* Painel de teste de Match */}
+          <div className="mt-6">
+
+            <MatchPanel
+              onResult={({ score, breakdown: b, durationMs }) => {
+                const pct = Math.round((Number(score) || 0) * 100);
+                setCompatibilityScore(pct);
+
+                // se backend enviar breakdown, atualiza; senão mantém o atual
+                if (b && typeof b === "object") {
+                  // espera-se { technical: 0..1, experience: 0..1, education: 0..1 } ou %
+                  const norm = (x) => (x <= 1 ? Math.round(x * 100) : Math.round(x));
+                  setBreakdown({
+                    technical: norm(b.technical ?? breakdown.technical),
+                    experience: norm(b.experience ?? breakdown.experience),
+                    education: norm(b.education ?? breakdown.education),
+                  });
+                }
+
+                if (typeof durationMs === "number") {
+                  setAnalysisTime(Math.max(0.1, durationMs / 1000));
+                }
+              }}
+            />
+
+          </div>
+
+          <div className="flex items-center gap-4 text-sm text-muted-foreground mt-4">
             <div className="flex items-center gap-1">
               <Icon name="Calendar" size={14} />
               <span>Analisado em {new Date()?.toLocaleDateString('pt-BR')}</span>
@@ -295,33 +210,23 @@ const AIResumeAnalysis = () => {
             </div>
           </div>
         </div>
+        {/* ← fecha corretamente o bloco do Header */}
 
         {/* Main Grid Layout */}
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
           {/* Left Column - Job Requirements */}
           <div className="xl:col-span-4">
-            <JobRequirementsPanel
-              jobData={jobData}
-              matchedKeywords={matchedKeywords}
-              missingKeywords={missingKeywords}
-            />
+            <JobRequirementsPanel jobData={jobData} matchedKeywords={matchedKeywords} missingKeywords={missingKeywords} />
           </div>
 
           {/* Center Column - Compatibility Score */}
           <div className="xl:col-span-4">
-            <CompatibilityScoreChart
-              score={compatibilityScore}
-              breakdown={scoreBreakdown}
-            />
+            <CompatibilityScoreChart score={compatibilityScore} breakdown={scoreBreakdown} />
           </div>
 
           {/* Right Column - Candidate Qualifications */}
           <div className="xl:col-span-4">
-            <CandidateQualificationsPanel
-              candidateData={candidateData}
-              matchedKeywords={matchedKeywords}
-              missingKeywords={missingKeywords}
-            />
+            <CandidateQualificationsPanel candidateData={candidateData} matchedKeywords={matchedKeywords} missingKeywords={missingKeywords} />
           </div>
         </div>
 
@@ -332,14 +237,8 @@ const AIResumeAnalysis = () => {
 
         {/* Third Row - Resume Viewer and Skills Matrix */}
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 mt-6">
-          <ResumeViewer
-            resumeData={candidateData}
-            highlightedKeywords={highlightedKeywords}
-          />
-          <SkillsMatrix
-            requiredSkills={requiredSkills}
-            candidateSkills={candidateSkills}
-          />
+          <ResumeViewer resumeData={candidateData} highlightedKeywords={highlightedKeywords} />
+          <SkillsMatrix requiredSkills={requiredSkills} candidateSkills={candidateSkills} />
         </div>
 
         {/* Fourth Row - Recommendations and Actions */}

@@ -4,3 +4,5 @@ scikit-learn
 jupyter
 fastapi
 uvicorn[standard]
+pdfplumber
+fitz  

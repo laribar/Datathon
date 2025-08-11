@@ -8,6 +8,8 @@ import BulkActionsBar from './components/BulkActionsBar';
 import CandidateModal from './components/CandidateModal';
 import SearchBar from './components/SearchBar';
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
+
 const CandidateManagement = () => {
   const navigate = useNavigate();
   const [searchTerm, setSearchTerm] = useState('');
@@ -33,7 +35,6 @@ const CandidateManagement = () => {
     highMatch: 0
   });
 
-  // Buscar candidatos do backend com filtros aplicados
   const fetchCandidates = async () => {
     setLoading(true);
     try {
@@ -53,14 +54,30 @@ const CandidateManagement = () => {
       queryParams.append('order_by', 'date');
       queryParams.append('order_dir', 'desc');
 
-      const res = await fetch(`/candidates?${queryParams.toString()}`);
-      if (!res.ok) throw new Error(`Erro ao buscar candidatos: ${res.status}`);
-      const data = await res.json();
+      const url = `${API_BASE_URL}/candidates?${queryParams.toString()}`;
+      console.log('[DEBUG] Buscando candidatos de:', url);
 
-      setCandidates(data.candidates || []);
-      setStats(data.stats || stats);
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Erro ao buscar candidatos: ${res.status}`);
+
+      const data = await res.json();
+      console.log('[DEBUG] Resposta da API:', data);
+
+      const candidatesList = data.candidates || data.data || data.results || [];
+      const statsData = data.stats || {
+        total: candidatesList.length,
+        new: 0,
+        interviewing: 0,
+        approved: 0,
+        rejected: 0,
+        highMatch: 0
+      };
+
+      setCandidates(candidatesList);
+      setStats(statsData);
     } catch (error) {
-      console.error(error);
+      console.error('[ERRO] Falha ao buscar candidatos:', error);
+      setCandidates([]);
     } finally {
       setLoading(false);
     }
@@ -71,7 +88,6 @@ const CandidateManagement = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters, searchTerm]);
 
-  // Seleção de candidatos
   const handleSelectCandidate = (candidateId) => {
     setSelectedCandidates(prev =>
       prev.includes(candidateId)
@@ -88,7 +104,6 @@ const CandidateManagement = () => {
     }
   };
 
-  // Filtros
   const handleFilterChange = (key, value) => {
     setFilters(prev => ({ ...prev, [key]: value }));
   };
@@ -104,7 +119,6 @@ const CandidateManagement = () => {
     setSearchTerm('');
   };
 
-  // Ações
   const handleViewProfile = (candidate) => {
     setSelectedCandidate(candidate);
     setIsModalOpen(true);
@@ -138,7 +152,6 @@ const CandidateManagement = () => {
   return (
     <div className="min-h-screen bg-background">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Header */}
         <div className="mb-8">
           <div className="flex items-center justify-between mb-6">
             <div>
@@ -157,7 +170,6 @@ const CandidateManagement = () => {
             </div>
           </div>
 
-          {/* Stats */}
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
             <StatCard label="Total" value={stats.total} icon="Users" color="primary" />
             <StatCard label="Novos" value={stats.new} icon="UserPlus" color="blue-400" />
@@ -167,7 +179,6 @@ const CandidateManagement = () => {
             <StatCard label="Alta Compatibilidade" value={stats.highMatch} icon="Target" color="success" />
           </div>
 
-          {/* Search */}
           <div className="mb-6">
             <SearchBar
               searchTerm={searchTerm}
@@ -177,7 +188,6 @@ const CandidateManagement = () => {
           </div>
         </div>
 
-        {/* Filters */}
         <FilterPanel
           filters={filters}
           onFilterChange={handleFilterChange}
@@ -186,7 +196,6 @@ const CandidateManagement = () => {
           onToggleExpanded={() => setIsFilterExpanded(!isFilterExpanded)}
         />
 
-        {/* Bulk Actions */}
         <BulkActionsBar
           selectedCount={selectedCandidates.length}
           onBulkStatusUpdate={handleBulkStatusUpdate}
@@ -195,7 +204,6 @@ const CandidateManagement = () => {
           onClearSelection={handleClearSelection}
         />
 
-        {/* Info */}
         <div className="flex items-center justify-between mb-4">
           <p className="text-sm text-muted-foreground">
             Mostrando {candidates.length} candidatos
@@ -211,7 +219,6 @@ const CandidateManagement = () => {
           </Button>
         </div>
 
-        {/* Table */}
         {loading ? (
           <p className="text-muted-foreground text-center">Carregando...</p>
         ) : (
@@ -226,7 +233,6 @@ const CandidateManagement = () => {
           />
         )}
 
-        {/* Empty */}
         {!loading && candidates.length === 0 && (
           <div className="text-center py-12">
             <Icon name="Users" size={48} className="text-muted-foreground mx-auto mb-4" />
@@ -236,7 +242,6 @@ const CandidateManagement = () => {
           </div>
         )}
 
-        {/* Modal */}
         <CandidateModal
           candidate={selectedCandidate}
           isOpen={isModalOpen}

@@ -1,26 +1,53 @@
 # backend/app/routers/candidates.py
 import json
 import os
+import random
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional, Dict, Any
 
 router = APIRouter(prefix="/candidates", tags=["candidates"])
 
-# Caminho para o arquivo JSON de candidatos
-CANDIDATES_PATH = os.path.join("backend", "data", "candidates.json")
+# Caminho para o arquivo JSON de candidatos (applicants)
+APPLICANTS_PATH = os.path.join("backend", "data", "applicants.json")
 
-# Função para carregar candidatos do JSON
+# Função para carregar e transformar candidatos
 def _load_candidates():
     try:
-        with open(CANDIDATES_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
+        with open(APPLICANTS_PATH, "r", encoding="utf-8") as f:
+            raw_data = json.load(f)
     except FileNotFoundError:
-        raise HTTPException(404, f"Arquivo {CANDIDATES_PATH} não encontrado")
+        raise HTTPException(404, f"Arquivo {APPLICANTS_PATH} não encontrado")
     except json.JSONDecodeError as e:
         raise HTTPException(500, f"Erro ao decodificar JSON: {e}")
     except Exception as e:
-        raise HTTPException(500, f"Erro lendo {CANDIDATES_PATH}: {e}")
+        raise HTTPException(500, f"Erro lendo {APPLICANTS_PATH}: {e}")
+
+    candidates = []
+    for cand_id, data in raw_data.items():
+        infos = data.get("infos_basicas", {})
+        prof = data.get("informacoes_profissionais", {})
+
+        # Formatar data
+        raw_date = infos.get("data_criacao")
+        try:
+            parsed_date = datetime.strptime(raw_date, "%d-%m-%Y %H:%M:%S")
+            application_date = parsed_date.strftime("%d/%m/%Y")
+        except Exception:
+            application_date = ""
+
+        candidates.append({
+            "id": cand_id,
+            "name": infos.get("nome", "").strip(),
+            "email": infos.get("email", "").strip(),
+            "position": prof.get("titulo_profissional", "").strip(),
+            "department": prof.get("area_atuacao", "").strip(),
+            "application_date": application_date,
+            "compatibility": random.randint(60, 100),  # valor simulado
+            "status": "novo",  # valor padrão
+        })
+
+    return candidates
 
 # Função auxiliar para parsear datas
 def parse_date(date_str: str):

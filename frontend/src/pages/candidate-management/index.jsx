@@ -24,8 +24,6 @@ const CandidateManagement = () => {
   });
   const [candidates, setCandidates] = useState([]);
   const [loading, setLoading] = useState(true);
-
-  // Estatísticas (vindas do backend)
   const [stats, setStats] = useState({
     total: 0,
     new: 0,
@@ -41,10 +39,7 @@ const CandidateManagement = () => {
     try {
       const queryParams = new URLSearchParams();
 
-      // Busca
       if (searchTerm) queryParams.append('search', searchTerm);
-
-      // Filtros
       if (filters.status) queryParams.append('status', filters.status);
       if (filters.position) queryParams.append('position', filters.position);
       if (filters.scoreRange) {
@@ -55,7 +50,6 @@ const CandidateManagement = () => {
       if (filters.dateFrom) queryParams.append('start_date', filters.dateFrom);
       if (filters.dateTo) queryParams.append('end_date', filters.dateTo);
 
-      // Ordenação
       queryParams.append('order_by', 'date');
       queryParams.append('order_dir', 'desc');
 
@@ -63,10 +57,8 @@ const CandidateManagement = () => {
       if (!res.ok) throw new Error(`Erro ao buscar candidatos: ${res.status}`);
       const data = await res.json();
 
-      // Agora o backend já retorna stats + candidates
       setCandidates(data.candidates || []);
       setStats(data.stats || stats);
-
     } catch (error) {
       console.error(error);
     } finally {
@@ -74,7 +66,6 @@ const CandidateManagement = () => {
     }
   };
 
-  // Recarregar quando filtros ou busca mudarem
   useEffect(() => {
     fetchCandidates();
     // eslint-disable-next-line react-hooks/exhaustive-deps

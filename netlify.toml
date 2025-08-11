@@ -1,14 +1,14 @@
 [build]
 base = "frontend"
 command = "npm install --no-audit --no-fund && npm run build"
-publish = "dist"
+publish = "build"   # <-- ajustado para o seu caso
 
 [build.environment]
 NODE_VERSION = "20"
 
-# SPA com React Router
 [[redirects]]
 from = "/*"
 to = "/index.html"
 status = 200
+
 

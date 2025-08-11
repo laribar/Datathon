@@ -5,5 +5,4 @@ __pycache__/
 *.pyo
 *.pyd
 *.env
-data/*.json
 data/processed/*.parquet

@@ -1,24 +1,36 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import Select from '../../../components/ui/Select';
 import Input from '../../../components/ui/Input';
 import Button from '../../../components/ui/Button';
 
 const FilterPanel = ({ 
-  filters, 
+  filters = {}, 
   onFilterChange, 
   onClearFilters, 
   isExpanded, 
   onToggleExpanded 
 }) => {
-  const statusOptions = [
+
+  // Valores padrão para evitar undefined
+  const appliedFilters = {
+    status: '',
+    position: '',
+    scoreRange: '',
+    dateFrom: '',
+    dateTo: '',
+    ...filters
+  };
+
+  // Memo para evitar recriação de arrays a cada render
+  const statusOptions = useMemo(() => [
     { value: '', label: 'Todos os Status' },
     { value: 'novo', label: 'Novo' },
     { value: 'entrevistando', label: 'Entrevistando' },
     { value: 'aprovado', label: 'Aprovado' },
     { value: 'rejeitado', label: 'Rejeitado' }
-  ];
+  ], []);
 
-  const positionOptions = [
+  const positionOptions = useMemo(() => [
     { value: '', label: 'Todas as Posições' },
     { value: 'desenvolvedor-frontend', label: 'Desenvolvedor Frontend' },
     { value: 'desenvolvedor-backend', label: 'Desenvolvedor Backend' },
@@ -27,14 +39,14 @@ const FilterPanel = ({
     { value: 'gerente-produto', label: 'Gerente de Produto' },
     { value: 'analista-dados', label: 'Analista de Dados' },
     { value: 'engenheiro-devops', label: 'Engenheiro DevOps' }
-  ];
+  ], []);
 
-  const scoreRangeOptions = [
+  const scoreRangeOptions = useMemo(() => [
     { value: '', label: 'Todas as Pontuações' },
     { value: '80-100', label: 'Alta Compatibilidade (80-100%)' },
     { value: '60-79', label: 'Média Compatibilidade (60-79%)' },
     { value: '0-59', label: 'Baixa Compatibilidade (0-59%)' }
-  ];
+  ], []);
 
   return (
     <div className="bg-card rounded-lg shadow-elevation-1 p-4 mb-6">
@@ -53,6 +65,8 @@ const FilterPanel = ({
             variant="ghost"
             size="sm"
             iconName={isExpanded ? "ChevronUp" : "ChevronDown"}
+            aria-expanded={isExpanded}
+            aria-label={isExpanded ? "Ocultar filtros" : "Mostrar filtros"}
             onClick={onToggleExpanded}
             className="lg:hidden"
           >
@@ -60,11 +74,12 @@ const FilterPanel = ({
           </Button>
         </div>
       </div>
+
       <div className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 ${!isExpanded ? 'hidden lg:grid' : ''}`}>
         <Select
           label="Status"
           options={statusOptions}
-          value={filters?.status}
+          value={appliedFilters.status}
           onChange={(value) => onFilterChange('status', value)}
           placeholder="Selecionar status"
         />
@@ -72,7 +87,7 @@ const FilterPanel = ({
         <Select
           label="Posição"
           options={positionOptions}
-          value={filters?.position}
+          value={appliedFilters.position}
           onChange={(value) => onFilterChange('position', value)}
           placeholder="Selecionar posição"
           searchable
@@ -81,7 +96,7 @@ const FilterPanel = ({
         <Select
           label="Compatibilidade IA"
           options={scoreRangeOptions}
-          value={filters?.scoreRange}
+          value={appliedFilters.scoreRange}
           onChange={(value) => onFilterChange('scoreRange', value)}
           placeholder="Selecionar faixa"
         />
@@ -91,13 +106,13 @@ const FilterPanel = ({
           <div className="grid grid-cols-2 gap-2">
             <Input
               type="date"
-              value={filters?.dateFrom}
+              value={appliedFilters.dateFrom}
               onChange={(e) => onFilterChange('dateFrom', e?.target?.value)}
               placeholder="Data inicial"
             />
             <Input
               type="date"
-              value={filters?.dateTo}
+              value={appliedFilters.dateTo}
               onChange={(e) => onFilterChange('dateTo', e?.target?.value)}
               placeholder="Data final"
             />

@@ -18,4 +18,3 @@ pytesseract==0.3.10
 # Utilitários
 python-dotenv==1.1.1
 tqdm==4.67.1
-sentence-transformers==2.2.2

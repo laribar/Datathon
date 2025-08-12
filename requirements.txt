@@ -10,12 +10,12 @@ pdfplumber==0.11.4
 PyMuPDF==1.24.9
 pyarrow==21.0.0
 python-multipart==0.0.9
+openai==1.40.1
 
-# Dependências opcionais para OCR (se quiser ler PDFs de imagem)
+# Dependências opcionais para OCR (PDF imagem)
 pillow==11.3.0
 pytesseract==0.3.10
 
 # Utilitários
 python-dotenv==1.1.1
 tqdm==4.67.1
-openai==1.40.1

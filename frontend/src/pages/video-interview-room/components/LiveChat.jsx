@@ -41,27 +41,49 @@ const LiveChat = ({ isOpen, onToggle }) => {
     scrollToBottom();
   }, [messages]);
 
-  const handleSendMessage = (e) => {
+  const handleSendMessage = async (e) => {
     e?.preventDefault();
     if (!newMessage?.trim()) return;
 
-    const message = {
+    const userMessage = {
       id: Date.now(),
       sender: "Você",
-      message: newMessage?.trim(),
+      message: newMessage.trim(),
       timestamp: new Date(),
       type: "interviewer"
     };
 
-    setMessages(prev => [...prev, message]);
+    setMessages(prev => [...prev, userMessage]);
     setNewMessage("");
-
-    // Simulate typing indicator
     setIsTyping(true);
-    setTimeout(() => {
+
+    try {
+      // Chamada ao backend FastAPI
+      const res = await fetch("http://localhost:8000/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: newMessage.trim() })
+      });
+      const data = await res.json();
+
+      // Mensagem vinda da IA
+      const aiMessage = {
+        id: Date.now() + 1,
+        sender: "IA",
+        message: data.reply, // Texto retornado pela IA
+        timestamp: new Date(),
+        type: "candidate" // ou "interviewer", dependendo de quem a IA representa
+      };
+
+      setMessages(prev => [...prev, aiMessage]);
+
+    } catch (error) {
+      console.error("Erro ao obter resposta da IA:", error);
+    } finally {
       setIsTyping(false);
-    }, 2000);
+    }
   };
+
 
   const formatTime = (date) => {
     return date?.toLocaleTimeString('pt-BR', { 

@@ -10,7 +10,9 @@ router = APIRouter(prefix="/candidates", tags=["candidates"])
 
 # Caminho absoluto para o arquivo JSON, independente do diretório de execução
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-APPLICANTS_PATH = os.path.join(BASE_DIR, "..", "data", "applicants.json")
+PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, "..", ".."))
+APPLICANTS_PATH = os.path.join(PROJECT_ROOT, "data", "applicants.json")
+
 
 
 def _load_candidates() -> List[Dict[str, Any]]:

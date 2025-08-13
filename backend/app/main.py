@@ -1,35 +1,61 @@
-from fastapi import FastAPI
-from backend.routers import jobs, candidates, match, interview_ws, sessions, chat
-from fastapi.middleware.cors import CORSMiddleware
+# === FILE: backend/app/main.py ===
 import os
-from dotenv import load_dotenv
-import openai
+from functools import lru_cache
+from fastapi import FastAPI
+from pydantic import BaseModel
 
-app = FastAPI()
+app = FastAPI(title="Datathon API", version="1.0.0")
 
-# Carrega variáveis do .env
-load_dotenv()
-openai.api_key = os.getenv("OPENAI_API_KEY")
-if not openai.api_key:
-    print("⚠️ OPENAI_API_KEY não encontrada. Verifique o .env no Render.")
+# ---- Health check leve (Render detecta a porta) ----
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok"}
 
-# CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # durante MVP, depois restrinja para o Netlify
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
+# ---- Exemplo: endpoint root opcional ----
 @app.get("/")
-def home():
-    return {"status": "API rodando com sucesso 🚀"}
+def root():
+    return {"service": "datathon-backend", "ok": True}
 
-# Routers
-app.include_router(jobs.router, prefix="/jobs", tags=["jobs"])
-app.include_router(candidates.router, prefix="/candidates", tags=["candidates"])
-app.include_router(match.router)  # já tem prefix/tags dentro do router
-app.include_router(sessions.router, prefix="/sessions", tags=["sessions"])
-# app.include_router(interview_ws.router, prefix="/interview", tags=["interview"])
-app.include_router(chat.router, prefix="/api", tags=["chat"])
+# ======== LAZY LOAD DO MODELO ========
+# Carregue peso pesado apenas quando necessário
+class MatchInput(BaseModel):
+    job_text: str
+    resume_text: str
+
+@lru_cache(maxsize=1)
+def get_embedder():
+    # Importes pesados aqui dentro (evita carregar no startup)
+    import torch
+    from sentence_transformers import SentenceTransformer
+
+    # Limita CPU threads para não estourar memória
+    try:
+        torch.set_num_threads(1)
+    except Exception:
+        pass
+
+    # Use um modelo pequeno para caber em 512Mi
+    model_name = os.getenv("ST_MODEL", "sentence-transformers/paraphrase-MiniLM-L3-v2")
+    model = SentenceTransformer(model_name, device="cpu")
+    return model
+
+def cosine_sim(a, b):
+    import numpy as np
+    # a, b são vetores 1d
+    na = a / (np.linalg.norm(a) + 1e-9)
+    nb = b / (np.linalg.norm(b) + 1e-9)
+    return float(np.dot(na, nb))
+
+@app.post("/match")
+def match(payload: MatchInput):
+    # Lazy load do modelo aqui
+    model = get_embedder()
+
+    # Inferência sem grad (economia de memória)
+    import torch
+    with torch.no_grad():
+        job_vec = model.encode(payload.job_text, normalize_embeddings=False)
+        res_vec = model.encode(payload.resume_text, normalize_embeddings=False)
+
+    score = cosine_sim(job_vec, res_vec)
+    return {"score": score}

@@ -7,17 +7,20 @@ const EmotionCam = ({
   topN = 3,
   width = 640,
   height = 480,
-  onResult,            // (resultJson) => void
-  autoStart = true,    // inicia automaticamente (só se não vier mediaStream)
-  jpegQuality = 0.6,   // reduz payload
+  onResult,
+  autoStart = true,
+  jpegQuality = 0.6,
   className = "",
-  mediaStream = null,  // NOVO: stream externo
+  mediaStream = null,   // stream externo (opcional)
 }) => {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const drawRef = useRef(null);
   const [running, setRunning] = useState(false);
   const [lastDominant, setLastDominant] = useState(null);
+
+  // controla propriedade do stream (se fomos nós que criamos)
+  const ownsStreamRef = useRef(false);
 
   useEffect(() => {
     let stopped = false;
@@ -30,22 +33,40 @@ const EmotionCam = ({
           audio: false,
         });
         if (stopped) return;
-        attachStream(stream);
+        ownsStreamRef.current = true;
+        await attachStream(stream);
       } catch (e) {
         console.error("EmotionCam: erro ao iniciar webcam:", e);
       }
     }
 
-    function attachStream(stream) {
+    async function attachStream(stream) {
       const v = videoRef.current;
       if (!v) return;
-      v.srcObject = stream;
-      v.play().catch(() => {});
-      setRunning(true);
 
-      // tick imediato + intervalo
-      tick();
-      timer = setInterval(tick, Math.max(100, intervalMs));
+      try {
+        v.srcObject = stream;
+
+        // aguarda metadados para poder dar play com segurança
+        await new Promise((resolve) => {
+          if (v.readyState >= 1) return resolve();
+          const onLoaded = () => {
+            v.removeEventListener("loadedmetadata", onLoaded);
+            resolve();
+          };
+          v.addEventListener("loadedmetadata", onLoaded, { once: true });
+        });
+
+        await v.play().catch(() => {});
+
+        setRunning(true);
+
+        // roda 1º tick e agenda próximos
+        tick();
+        timer = setInterval(tick, Math.max(100, intervalMs));
+      } catch (e) {
+        console.warn("EmotionCam attachStream erro:", e.message);
+      }
     }
 
     async function tick() {
@@ -82,7 +103,6 @@ const EmotionCam = ({
       try {
         const overlay = drawRef.current;
         if (!overlay) return;
-
         const ctx = overlay.getContext("2d");
         ctx.clearRect(0, 0, overlay.width, overlay.height);
 
@@ -111,8 +131,9 @@ const EmotionCam = ({
       }
     }
 
-    // Se veio mediaStream externo, usa ele
+    // usa stream externo se vier; senão, abre local (se autoStart)
     if (mediaStream) {
+      ownsStreamRef.current = false;
       attachStream(mediaStream);
     } else if (autoStart) {
       startLocalCamera();
@@ -125,14 +146,20 @@ const EmotionCam = ({
 
       const v = videoRef.current;
       const s = v?.srcObject;
-      if (s && s.getTracks) s.getTracks().forEach((t) => t.stop());
+
+      // só paramos tracks se FOMOS nós que criamos o stream
+      if (ownsStreamRef.current && s && s.getTracks) {
+        try {
+          s.getTracks().forEach((t) => t.stop());
+        } catch {}
+      }
+
       if (v) v.srcObject = null;
     };
   }, [backendUrl, intervalMs, topN, width, height, jpegQuality, autoStart, onResult, mediaStream]);
 
   return (
     <div className={`relative inline-block ${className}`} style={{ width, height }}>
-      {/* vídeo base */}
       <video
         ref={videoRef}
         width={width}
@@ -142,9 +169,7 @@ const EmotionCam = ({
         muted
         className="rounded-lg object-cover w-full h-full bg-black"
       />
-      {/* canvas para enviar frame */}
       <canvas ref={canvasRef} width={width} height={height} className="hidden" />
-      {/* overlay */}
       <canvas
         ref={drawRef}
         width={width}
@@ -152,16 +177,12 @@ const EmotionCam = ({
         className="absolute inset-0 pointer-events-none"
         style={{ borderRadius: 12 }}
       />
-      {/* badge dominante */}
       <div className="absolute top-3 left-3 bg-black/60 text-white text-xs px-2 py-1 rounded">
         {lastDominant ?? "—"}
       </div>
-      {/* status */}
       <div className="absolute top-3 right-3">
         <span
-          className={`inline-block w-2 h-2 rounded-full ${
-            running ? "bg-green-400" : "bg-red-500"
-          }`}
+          className={`inline-block w-2 h-2 rounded-full ${running ? "bg-green-400" : "bg-red-500"}`}
           title={running ? "Analisando" : "Parado"}
         />
       </div>
@@ -170,3 +191,4 @@ const EmotionCam = ({
 };
 
 export default EmotionCam;
+  

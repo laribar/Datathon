@@ -1,10 +1,8 @@
 services:
-  - type: web
-    name: ai-recruitment-backend
-    env: python
-    plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn backend.app.main:app --host 0.0.0.0 --port 10000
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.10
+- type: web
+  name: emotion-api
+  runtime: python
+  pythonVersion: 3.11.9
+  buildCommand: pip install -r requirements.txt
+  startCommand: uvicorn fastapi_emotion:app --host 0.0.0.0 --port $PORT
+

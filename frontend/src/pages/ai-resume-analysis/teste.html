@@ -55,6 +55,9 @@
       <div class="badge">Faces</div>
       <div id="faces" class="status">—</div>
       <div style="height:8px"></div>
+      <div class="badge">Estatísticas</div>
+      <div id="stats" class="status">—</div>
+      <div style="height:8px"></div>
       <div class="badge">Logs</div>
       <div id="log" class="status">—</div>
     </div>
@@ -74,8 +77,11 @@
   const $backendUrl = document.getElementById('backendUrl');
   const $intervalMs = document.getElementById('intervalMs');
   const $topN = document.getElementById('topN');
+  const $stats = document.getElementById('stats');
 
   let timer = null;
+  let emotionDurations = {};
+  let lastDetectionTime = null;
 
   function log(msg, type='ok') {
     const ts = new Date().toLocaleTimeString();
@@ -97,19 +103,14 @@
   }
 
   function frameToBase64() {
-    // desenha o frame atual do vídeo no canvas, pega o PNG base64, remove prefixo "data:..."
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    // antes: const dataUrl = canvas.toDataURL('image/png');
-  const dataUrl = canvas.toDataURL('image/jpeg', 0.6); // 60% de qualidade
-
-    return dataUrl.split(',')[1]; // só o base64
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
+    return dataUrl.split(',')[1];
   }
 
   function drawResults(resp) {
-    // limpa overlay
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    // desenha boxes e labels
     const faces = resp?.faces || [];
     faces.forEach(f => {
       if (f.box && f.box.length === 4) {
@@ -126,7 +127,6 @@
       }
     });
 
-    // DOM texto
     if (resp?.dominant_overall) {
       $dominant.textContent = `${resp.dominant_overall.label} (${(resp.dominant_overall.score*100).toFixed(1)}%)`;
     } else {
@@ -141,6 +141,24 @@
     } else {
       $faces.textContent = '—';
     }
+  }
+
+  function updateStats() {
+    const totalTime = Object.values(emotionDurations).reduce((sum, current) => sum + current, 0);
+
+    if (totalTime === 0) {
+      $stats.textContent = '—';
+      return;
+    }
+
+    const statsText = Object.entries(emotionDurations)
+      .sort(([, timeA], [, timeB]) => timeB - timeA)
+      .map(([emotion, time]) => {
+        const percentage = (time / totalTime) * 100;
+        return `${emotion}: ${percentage.toFixed(1)}%`;
+      }).join('\n');
+
+    $stats.textContent = statsText;
   }
 
   async function tick() {
@@ -162,6 +180,21 @@
       const json = await resp.json();
       drawResults(json);
       log('Frame analisado com sucesso.');
+
+      const now = performance.now();
+      if (lastDetectionTime !== null && json.dominant_overall) {
+        const duration = now - lastDetectionTime;
+        const dominantEmotion = json.dominant_overall.label;
+
+        if (emotionDurations[dominantEmotion]) {
+          emotionDurations[dominantEmotion] += duration;
+        } else {
+          emotionDurations[dominantEmotion] = duration;
+        }
+      }
+      lastDetectionTime = now;
+      updateStats();
+
     } catch (e) {
       log('Erro ao enviar/analisar frame: ' + e.message, 'err');
     }
@@ -174,7 +207,10 @@
     const ok = await startCam();
     if (!ok) { $btnStart.disabled = false; $btnStop.disabled = true; return; }
 
-    // primeiro tick imediato para dar feedback rápido
+    emotionDurations = {};
+    lastDetectionTime = null;
+    $stats.textContent = '—';
+
     tick();
     const ms = Math.max(100, Number($intervalMs.value) || 500);
     timer = setInterval(tick, ms);

@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <title>Teste Rápido - Emoção via Webcam</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; background: #0f1115; color: #e8eaf0; margin:0; padding:24px; }
+    .wrap { max-width: 980px; margin: 0 auto; }
+    h1 { font-size: 20px; margin: 0 0 12px; }
+    .row { display:flex; gap:16px; align-items:flex-start; }
+    video, canvas { width: 640px; height: 480px; background:#111; border-radius:12px; }
+    .side { min-width:260px; padding:12px 16px; background:#151821; border-radius:12px; }
+    .status { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; white-space:pre-wrap; }
+    .badge { display:inline-block; padding:4px 8px; border-radius:8px; background:#1f2633; margin-right:6px; }
+    .ok { color:#67e8f9; }
+    .err { color:#f87171; }
+    label { display:block; margin:10px 0 4px; font-size:12px; opacity:.8; }
+    input { width:100%; padding:8px 10px; border-radius:8px; border:1px solid #2a2f3a; background:#0f131a; color:#e8eaf0; }
+    button { all:unset; padding:10px 14px; border-radius:10px; background:#2F9FF8; color:#0b0e14; cursor:pointer; font-weight:600; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    .controls { display:flex; gap:8px; margin:12px 0 8px; align-items:center; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🎥 Teste de Emoção via Webcam → FastAPI /api/emotion</h1>
+
+  <div class="controls">
+    <div>
+      <label>Backend URL</label>
+      <input id="backendUrl" value="http://127.0.0.1:8000/api/emotion" />
+    </div>
+<div>
+  <label>Câmera</label>
+  <select id="cameraSelect"></select>
+</div>
+
+    <div>
+      <label>Intervalo (ms)</label>
+      <input id="intervalMs" type="number" min="100" step="50" value="500" />
+    </div>
+    <div>
+      <label>Top N</label>
+      <input id="topN" type="number" min="1" max="5" step="1" value="3" />
+    </div>
+    <div style="margin-top:22px;">
+      <button id="btnStart">Iniciar</button>
+      <button id="btnStop" disabled>Parar</button>
+    </div>
+  </div>
+
+  <div class="row">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="canvas" width="640" height="480"></canvas>
+    <div class="side">
+      <div class="badge">Dominante</div>
+      <div id="dominant" class="status">—</div>
+      <div style="height:8px"></div>
+      <div class="badge">Faces</div>
+      <div id="faces" class="status">—</div>
+      <div style="height:8px"></div>
+      <div class="badge">Estatísticas</div>
+      <div id="stats" class="status">—</div>
+      <div style="height:8px"></div>
+      <div class="badge">Logs</div>
+      <div id="log" class="status">—</div>
+    </div>
+  </div>
+</div>
+
+<script>
+(async () => {
+  const video = document.getElementById('video');
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const $dominant = document.getElementById('dominant');
+  const $faces = document.getElementById('faces');
+  const $log = document.getElementById('log');
+  const $btnStart = document.getElementById('btnStart');
+  const $btnStop = document.getElementById('btnStop');
+  const $backendUrl = document.getElementById('backendUrl');
+  const $intervalMs = document.getElementById('intervalMs');
+  const $topN = document.getElementById('topN');
+  const $stats = document.getElementById('stats');
+  const ROOM = window.EMBED_ROOM || "entrevista-demo";
+  const PARTICIPANT = window.EMBED_PARTICIPANT || ("cand-" + Math.random().toString(36).slice(2,7));
+  const ROLE = window.EMBED_ROLE || "candidato";
+
+  // --- seletor de câmera
+  const $cameraSelect = document.getElementById('cameraSelect');
+  const LS_CAM_KEY = "emotioncam.cameraId";
+  let selectedCameraId = localStorage.getItem(LS_CAM_KEY) || null;
+  let currentStream = null;
+  let timer = null;
+  let emotionDurations = {};
+  let lastDetectionTime = null;
+
+  function log(msg, type='ok') {
+    const ts = new Date().toLocaleTimeString();
+    $log.textContent = `[${ts}] ${msg}`;
+    $log.className = 'status ' + (type === 'err' ? 'err' : 'ok');
+  }
+  async function loadCameras() {
+    try {
+      // Alguns browsers só liberam labels após 1ª permissão
+      try {
+        const tmp = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        tmp.getTracks().forEach(t => t.stop());
+      } catch (_) {}
+
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const cams = devices.filter(d => d.kind === "videoinput");
+
+      $cameraSelect.innerHTML = "";
+      cams.forEach((cam, idx) => {
+        const opt = document.createElement("option");
+        opt.value = cam.deviceId;
+        opt.textContent = cam.label || `Câmera ${idx+1}`;
+        $cameraSelect.appendChild(opt);
+      });
+
+      // restaura escolha anterior se existir
+      if (selectedCameraId && [...$cameraSelect.options].some(o => o.value === selectedCameraId)) {
+        $cameraSelect.value = selectedCameraId;
+      } else if (cams[0]) {
+        selectedCameraId = cams[0].deviceId;
+        $cameraSelect.value = selectedCameraId;
+      }
+    } catch (e) {
+      log("Falha ao listar câmeras: " + e.message, "err");
+    }
+  }
+
+
+
+  async function startCam() {
+    try {
+      // fecha stream anterior se houver
+      if (currentStream && currentStream.getTracks) {
+        currentStream.getTracks().forEach(t => t.stop());
+      }
+
+    const constraints = {
+      video: selectedCameraId
+        ? { deviceId: { exact: selectedCameraId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+        : { width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false
+    };
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      currentStream = stream;
+      video.srcObject = stream;
+      await video.play();
+
+      if (selectedCameraId) localStorage.setItem(LS_CAM_KEY, selectedCameraId);
+
+      log('Webcam iniciada.');
+      return true;
+    } catch (e) {
+      log('Falha ao acessar webcam: ' + e.message, 'err');
+      return false;
+    }
+  }
+
+  function frameToBase64() {
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
+    return dataUrl.split(',')[1];
+  }
+
+  function drawResults(resp) {
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    const faces = resp?.faces || [];
+    faces.forEach(f => {
+      if (f.box && f.box.length === 4) {
+        const [x,y,w,h] = f.box;
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = '#2F9FF8';
+        ctx.strokeRect(x, y, w, h);
+        if (f.dominant) {
+          const label = `${f.dominant.label} (${(f.dominant.score*100).toFixed(0)}%)`;
+          ctx.fillStyle = '#2F9FF8';
+          ctx.font = '16px system-ui, Arial';
+          ctx.fillText(label, x + 6, Math.max(16, y - 6));
+        }
+      }
+    });
+
+    if (resp?.dominant_overall) {
+      $dominant.textContent = `${resp.dominant_overall.label} (${(resp.dominant_overall.score*100).toFixed(1)}%)`;
+    } else {
+      $dominant.textContent = '—';
+    }
+
+    if (faces.length) {
+      $faces.textContent = faces.map((f,i) => {
+        const d = f.dominant ? `${f.dominant.label} ${(f.dominant.score*100).toFixed(0)}%` : '—';
+        return `#${i+1} ${d}` + (f.box ? ` [${f.box.join(', ')}]` : '');
+      }).join('\n');
+    } else {
+      $faces.textContent = '—';
+    }
+  }
+
+  function updateStats() {
+    const totalTime = Object.values(emotionDurations).reduce((sum, current) => sum + current, 0);
+
+    if (totalTime === 0) {
+      $stats.textContent = '—';
+      return;
+    }
+
+    const statsText = Object.entries(emotionDurations)
+      .sort(([, timeA], [, timeB]) => timeB - timeA)
+      .map(([emotion, time]) => {
+        const percentage = (time / totalTime) * 100;
+        return `${emotion}: ${percentage.toFixed(1)}%`;
+      }).join('\n');
+
+    $stats.textContent = statsText;
+  }
+
+  async function tick() {
+    try {
+      const body = {
+        image_base64: frameToBase64(),
+        top_n: Math.max(1, Math.min(5, Number($topN.value) || 1)),
+        detect_faces: true,
+        room: ROOM,
+        participant_id: PARTICIPANT,
+        role: ROLE
+      };
+      const resp = await fetch($backendUrl.value.trim(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (!resp.ok) {
+        const txt = await resp.text();
+        throw new Error(`HTTP ${resp.status}: ${txt}`);
+      }
+      const json = await resp.json();
+      drawResults(json);
+      log('Frame analisado com sucesso.');
+
+      const now = performance.now();
+      if (lastDetectionTime !== null && json.dominant_overall) {
+        const duration = now - lastDetectionTime;
+        const dominantEmotion = json.dominant_overall.label;
+
+        if (emotionDurations[dominantEmotion]) {
+          emotionDurations[dominantEmotion] += duration;
+        } else {
+          emotionDurations[dominantEmotion] = duration;
+        }
+      }
+      lastDetectionTime = now;
+      updateStats();
+
+    } catch (e) {
+      log('Erro ao enviar/analisar frame: ' + e.message, 'err');
+    }
+  }
+
+  $cameraSelect.addEventListener("change", async (ev) => {
+    selectedCameraId = ev.target.value;
+    localStorage.setItem(LS_CAM_KEY, selectedCameraId);
+    // se já está rodando (btn Stop habilitado), reinicia a captura
+    if (!$btnStop.disabled) {
+      await startCam();
+    }
+  });
+
+  // carrega as câmeras logo no início (estamos dentro de uma IIFE async)
+  await loadCameras();
+
+
+  $btnStart.onclick = async () => {
+    $btnStart.disabled = true;
+    $btnStop.disabled = false;
+
+    const ok = await startCam();
+    if (!ok) { $btnStart.disabled = false; $btnStop.disabled = true; return; }
+
+    emotionDurations = {};
+    lastDetectionTime = null;
+    $stats.textContent = '—';
+
+    tick();
+    const ms = Math.max(100, Number($intervalMs.value) || 500);
+    timer = setInterval(tick, ms);
+  };
+
+  $btnStop.onclick = () => {
+    $btnStart.disabled = false;
+    $btnStop.disabled = true;
+    if (timer) clearInterval(timer);
+    timer = null;
+
+    const stream = video.srcObject;
+    if (stream && stream.getTracks) stream.getTracks().forEach(t => t.stop());
+    video.srcObject = null;
+    log('Captura parada.');
+  };
+  navigator.mediaDevices?.addEventListener?.("devicechange", async () => {
+  await loadCameras();
+});
+
+})();
+</script>
+</body>
+</html>

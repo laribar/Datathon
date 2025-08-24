@@ -4,6 +4,12 @@ import Icon from "../../../components/AppIcon";
 import Button from "../../../components/ui/Button";
 import EmotionCam from "../../../components/ui/EmotionCam";
 
+// ✅ Painel de vídeo com seletor de câmera profissional
+// - Lista e seleciona webcams (videoinput) via mediaDevices
+// - Hot-swap (devicechange) quando usuário pluga/remove a câmera
+// - Passa o MediaStream para o EmotionCam via prop `mediaStream`
+// - Fallback seguro e mensagens claras de erro
+
 const VideoPanel = ({
   isMainVideo = false,
   participantName = "Participante",
@@ -18,18 +24,14 @@ const VideoPanel = ({
   const containerRef = useRef(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
-  // Dispositivos
-  const [videoDevices, setVideoDevices] = useState([]);   // videoinput
-  const [audioDevices, setAudioDevices] = useState([]);   // audioinput
-  const [selectedCamId, setSelectedCamId] = useState("");
-  const [selectedMicId, setSelectedMicId] = useState("");
-
-  // Streams
+  // ---- Estado do seletor de câmera ----
+  const [devices, setDevices] = useState([]); // [{deviceId,label,kind}]
+  const [selectedDeviceId, setSelectedDeviceId] = useState("");
   const [stream, setStream] = useState(null);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
 
-  // Helpers
+  // ---- Utils ----
   const stopStream = useCallback(() => {
     try {
       stream?.getTracks()?.forEach((t) => t.stop());
@@ -38,21 +40,19 @@ const VideoPanel = ({
 
   const refreshDevices = useCallback(async () => {
     try {
-      const all = await navigator.mediaDevices.enumerateDevices();
-      const cams = all.filter((d) => d.kind === "videoinput");
-      const mics = all.filter((d) => d.kind === "audioinput");
-      setVideoDevices(cams);
-      setAudioDevices(mics);
-      if (!selectedCamId && cams[0]) setSelectedCamId(cams[0].deviceId);
-      if (!selectedMicId && mics[0]) setSelectedMicId(mics[0].deviceId);
+      const list = await navigator.mediaDevices.enumerateDevices();
+      const cams = list.filter((d) => d.kind === "videoinput");
+      setDevices(cams);
+      // Se ainda não temos seleção, pega a primeira
+      if (!selectedDeviceId && cams[0]) setSelectedDeviceId(cams[0].deviceId);
     } catch (e) {
       console.error(e);
-      setErrorMsg("Não foi possível listar dispositivos. Verifique permissões.");
+      setErrorMsg("Não foi possível listar as câmeras. Verifique permissões.");
     }
-  }, [selectedCamId, selectedMicId]);
+  }, [selectedDeviceId]);
 
-  const startWithDevices = useCallback(
-    async (camId, micId) => {
+  const startWith = useCallback(
+    async (deviceId) => {
       setLoading(true);
       setErrorMsg("");
       try {
@@ -60,43 +60,41 @@ const VideoPanel = ({
         stopStream();
 
         const constraints = {
-          video: isVideoOff
-            ? false
-            : camId
-            ? { deviceId: { exact: camId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+          video: deviceId
+            ? { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
             : { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
-          audio: micId ? { deviceId: { exact: micId } } : true, // se não houver, pega padrão
+          audio: false,
         };
 
         const newStream = await navigator.mediaDevices.getUserMedia(constraints);
-
-        // aplica mute conforme prop
-        newStream.getAudioTracks().forEach((t) => (t.enabled = !isAudioMuted));
-
         setStream(newStream);
       } catch (e) {
         console.error(e);
         setErrorMsg(
-          "Falha ao iniciar câmera/microfone. Dê permissão no navegador e verifique se não estão em uso por outro app."
+          "Falha ao iniciar a câmera. Garanta que o browser tem permissão e que a câmera não está em uso por outro app."
         );
       } finally {
         setLoading(false);
       }
     },
-    [isVideoOff, isAudioMuted, stopStream]
+    [stopStream]
   );
 
-  // Init: pega permissão uma vez para liberar labels e popula devices
+  // ---- Init: pede permissão uma vez e popula devices (labels) ----
   useEffect(() => {
     (async () => {
+      // Em muitos browsers os labels só aparecem após permissão
       try {
-        await startWithDevices("", ""); // padrão -> libera labels na maioria dos browsers
+        if (!isVideoOff) {
+          await startWith(""); // pega padrão para liberar labels
+        }
         await refreshDevices();
       } catch (e) {
-        // ok
+        console.error(e);
       }
     })();
 
+    // hot-swap de dispositivos
     const onDeviceChange = () => refreshDevices();
     navigator.mediaDevices?.addEventListener?.("devicechange", onDeviceChange);
 
@@ -104,21 +102,14 @@ const VideoPanel = ({
       navigator.mediaDevices?.removeEventListener?.("devicechange", onDeviceChange);
       stopStream();
     };
-  }, [refreshDevices, startWithDevices, stopStream]);
+  }, [isVideoOff, refreshDevices, startWith, stopStream]);
 
-  // Troca de câmera/microfone pelo usuário
+  // ---- Quando usuário troca de câmera ----
   useEffect(() => {
-    if (selectedCamId || selectedMicId) {
-      startWithDevices(selectedCamId, selectedMicId);
-    }
-  }, [selectedCamId, selectedMicId, startWithDevices]);
+    if (selectedDeviceId) startWith(selectedDeviceId);
+  }, [selectedDeviceId, startWith]);
 
-  // Responder a mudanças externas de mute
-  useEffect(() => {
-    stream?.getAudioTracks()?.forEach((t) => (t.enabled = !isAudioMuted));
-  }, [isAudioMuted, stream]);
-
-  // Fullscreen
+  // ---- Fullscreen ----
   const toggleFullscreen = async () => {
     try {
       if (!document.fullscreenElement && containerRef.current) {
@@ -133,7 +124,7 @@ const VideoPanel = ({
     }
   };
 
-  // UI helpers
+  // ---- UI helpers ----
   const getQualityColor = () => {
     switch (connectionQuality) {
       case "excellent":
@@ -148,10 +139,12 @@ const VideoPanel = ({
         return "text-gray-400";
     }
   };
+
   const getQualityBars = () => {
     const bars = [];
     const levels = { excellent: 4, good: 3, fair: 2, poor: 1 };
     const level = levels?.[connectionQuality] || 0;
+
     for (let i = 0; i < 4; i++) {
       bars.push(
         <div
@@ -165,6 +158,7 @@ const VideoPanel = ({
     return bars;
   };
 
+  // ---- URL do backend de emoções (Vite) ----
   const EMOTION_URL =
     import.meta?.env?.VITE_EMOTION_URL || "http://127.0.0.1:8000/api/emotion";
 
@@ -175,54 +169,36 @@ const VideoPanel = ({
         isMainVideo ? "h-full" : "h-48"
       }`}
     >
-      {/* Topbar: seletor de câmera e microfone */}
-      <div className="absolute z-20 top-3 left-3 flex flex-wrap items-center gap-2 bg-black/40 backdrop-blur-sm px-2 py-1 rounded">
-        {/* Câmera */}
-        <div className="flex items-center gap-2">
+      {/* Topbar: seletor de câmera */}
+      {!isVideoOff && (
+        <div className="absolute z-20 top-3 left-3 flex items-center gap-2 bg-black/40 backdrop-blur-sm px-2 py-1 rounded">
           <Icon name="Camera" size={14} className="text-white/80" />
           <select
             className="text-xs bg-transparent text-white/90 border border-white/20 rounded px-2 py-1 outline-none"
-            value={selectedCamId}
-            onChange={(e) => setSelectedCamId(e.target.value)}
+            value={selectedDeviceId}
+            onChange={(e) => setSelectedDeviceId(e.target.value)}
             title="Selecionar câmera"
           >
-            {videoDevices.map((d) => (
+            {devices.map((d) => (
               <option key={d.deviceId} value={d.deviceId}>
                 {d.label || `Câmera ${d.deviceId.slice(0, 6)}`}
               </option>
             ))}
           </select>
-        </div>
 
-        {/* Microfone */}
-        <div className="flex items-center gap-2">
-          <Icon name="Mic" size={14} className="text-white/80" />
-          <select
-            className="text-xs bg-transparent text-white/90 border border-white/20 rounded px-2 py-1 outline-none"
-            value={selectedMicId}
-            onChange={(e) => setSelectedMicId(e.target.value)}
-            title="Selecionar microfone"
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-white/80 hover:bg-white/10"
+            onClick={refreshDevices}
+            title="Atualizar lista de câmeras"
           >
-            {audioDevices.map((d) => (
-              <option key={d.deviceId} value={d.deviceId}>
-                {d.label || `Microfone ${d.deviceId.slice(0, 6)}`}
-              </option>
-            ))}
-          </select>
+            <Icon name="RefreshCw" size={14} />
+          </Button>
         </div>
+      )}
 
-        <Button
-          variant="ghost"
-          size="sm"
-          className="text-white/80 hover:bg-white/10"
-          onClick={refreshDevices}
-          title="Atualizar lista de dispositivos"
-        >
-          <Icon name="RefreshCw" size={14} />
-        </Button>
-      </div>
-
-      {/* Área de vídeo / placeholder */}
+      {/* Video / Placeholder */}
       <div className="relative w-full h-full">
         {isVideoOff ? (
           <div className="flex items-center justify-center h-full bg-gray-800">
@@ -236,7 +212,7 @@ const VideoPanel = ({
           </div>
         ) : (
           <>
-            {/* EmotionCam usa o stream (ele pode conter áudio; o componente ignora se não usar) */}
+            {/* EmotionCam recebe o stream selecionado */}
             <EmotionCam
               className="w-full h-full"
               width={1280}
@@ -244,16 +220,18 @@ const VideoPanel = ({
               backendUrl={EMOTION_URL}
               intervalMs={500}
               topN={3}
-              mediaStream={stream}
-              onResult={() => {}}
+              mediaStream={stream} // <- chave: usa a câmera escolhida
+              onResult={(json) => {
+                // console.log("Emotion:", json?.dominant_overall);
+              }}
             />
 
-            {/* Overlays */}
+            {/* Loading / Erro overlay */}
             {loading && (
               <div className="absolute inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-10">
                 <div className="flex items-center gap-2 text-white/90 text-sm">
                   <Icon name="Loader2" size={16} className="animate-spin" />
-                  Iniciando dispositivos…
+                  Iniciando câmera…
                 </div>
               </div>
             )}
@@ -272,7 +250,7 @@ const VideoPanel = ({
 
         {/* Mic mutado */}
         {isAudioMuted && (
-          <div className="absolute bottom-3 left-3 bg-red-600 rounded-full p-2" title="Microfone mutado">
+          <div className="absolute bottom-3 left-3 bg-red-600 rounded-full p-2">
             <Icon name="MicOff" size={16} className="text-white" />
           </div>
         )}
@@ -285,7 +263,7 @@ const VideoPanel = ({
           </div>
         )}
 
-        {/* Nome */}
+        {/* Nome do participante */}
         <div className="absolute bottom-3 left-3 bg-black/50 backdrop-blur-sm rounded px-3 py-1">
           <span className="text-white text-sm font-medium">{participantName}</span>
         </div>
@@ -305,18 +283,6 @@ const VideoPanel = ({
           </div>
         )}
       </div>
-
-      {/* Elemento <audio> local (muted) só para manter a track ativa sem eco.
-          Se você quiser monitorar o áudio localmente, remova 'muted' (não recomendado). */}
-      <audio
-        autoPlay
-        playsInline
-        muted
-        ref={(el) => {
-          if (el && stream) el.srcObject = stream;
-        }}
-        style={{ display: "none" }}
-      />
     </div>
   );
 };

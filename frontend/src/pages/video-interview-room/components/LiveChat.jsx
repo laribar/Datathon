@@ -1,9 +1,12 @@
+// pages/video-interview-room/components/LiveChat.jsx
 import React, { useState, useRef, useEffect } from 'react';
 import Icon from '../../../components/AppIcon';
 import Button from '../../../components/ui/Button';
 import Input from '../../../components/ui/Input';
+import EmotionCam from '../../../components/ui/EmotionCam';
 
 const LiveChat = ({ isOpen, onToggle }) => {
+  const [dominantEmotion, setDominantEmotion] = useState(null); // sem TS em .jsx
   const [messages, setMessages] = useState([
     {
       id: 1,
@@ -58,38 +61,47 @@ const LiveChat = ({ isOpen, onToggle }) => {
     setIsTyping(true);
 
     try {
-      // Chamada ao backend FastAPI
       const res = await fetch("http://localhost:8000/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: newMessage.trim() })
+        body: JSON.stringify({ message: userMessage.message })
       });
+
       const data = await res.json();
 
-      // Mensagem vinda da IA
       const aiMessage = {
         id: Date.now() + 1,
         sender: "IA",
-        message: data.reply, // Texto retornado pela IA
+        message: data?.reply ?? "(sem resposta)",
         timestamp: new Date(),
-        type: "candidate" // ou "interviewer", dependendo de quem a IA representa
+        type: "candidate"
       };
 
       setMessages(prev => [...prev, aiMessage]);
 
     } catch (error) {
       console.error("Erro ao obter resposta da IA:", error);
+      setMessages(prev => [
+        ...prev,
+        {
+          id: Date.now() + 2,
+          sender: "Sistema",
+          message: "Falha ao contatar o assistente. Tente novamente.",
+          timestamp: new Date(),
+          type: "system"
+        }
+      ]);
     } finally {
       setIsTyping(false);
     }
   };
 
-
   const formatTime = (date) => {
-    return date?.toLocaleTimeString('pt-BR', { 
-      hour: '2-digit', 
-      minute: '2-digit' 
-    });
+    try {
+      return date?.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    } catch {
+      return '';
+    }
   };
 
   const getMessageStyle = (type) => {
@@ -125,7 +137,12 @@ const LiveChat = ({ isOpen, onToggle }) => {
           <Icon name="MessageSquare" size={20} className="text-blue-500" />
           <h3 className="font-semibold text-foreground">Chat da Entrevista</h3>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
+          {/* Badge da emoção dominante (ao vivo) */}
+          <div className="text-xs text-muted-foreground">
+            Emoção: <span className="font-medium">{dominantEmotion ?? '—'}</span>
+          </div>
+
           <div className="flex items-center gap-1">
             <div className="w-2 h-2 bg-green-500 rounded-full"></div>
             <span className="text-xs text-muted-foreground">3 online</span>
@@ -140,8 +157,9 @@ const LiveChat = ({ isOpen, onToggle }) => {
           </Button>
         </div>
       </div>
+
       {/* Messages Container */}
-      <div 
+      <div
         ref={chatContainerRef}
         className="flex-1 overflow-y-auto p-4 space-y-3"
       >
@@ -179,6 +197,7 @@ const LiveChat = ({ isOpen, onToggle }) => {
         
         <div ref={messagesEndRef} />
       </div>
+
       {/* Message Input */}
       <form onSubmit={handleSendMessage} className="p-4 border-t border-border">
         <div className="flex gap-2">
@@ -216,6 +235,18 @@ const LiveChat = ({ isOpen, onToggle }) => {
           </Button>
         </div>
       </form>
+
+      {/* EmotionCam oculto apenas para captar emoção e atualizar o header */}
+      <div className="hidden">
+        <EmotionCam
+          width={320}
+          height={180}
+          intervalMs={700}
+          topN={3}
+          backendUrl={process.env.REACT_APP_EMOTION_URL || "http://127.0.0.1:8000/api/emotion"}
+          onResult={(json) => setDominantEmotion(json?.dominant_overall?.label ?? null)}
+        />
+      </div>
     </div>
   );
 };

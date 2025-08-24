@@ -1,11 +1,13 @@
+// pages/interview/components/VideoPanel.jsx
 import React, { useState, useRef, useEffect } from 'react';
 import Icon from '../../../components/AppIcon';
 import Button from '../../../components/ui/Button';
+import EmotionCam from '../../../components/ui/EmotionCam';
 
-const VideoPanel = ({ 
-  isMainVideo = false, 
-  participantName = "Participante", 
-  isAudioMuted = false, 
+const VideoPanel = ({
+  isMainVideo = false,
+  participantName = "Participante",
+  isAudioMuted = false,
   isVideoOff = false,
   connectionQuality = "good",
   onToggleAudio,
@@ -17,9 +19,8 @@ const VideoPanel = ({
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   useEffect(() => {
-    // Simulate video stream
+    // Simulate video stream placeholder (substitua por WebRTC real)
     if (videoRef?.current && !isVideoOff) {
-      // In real implementation, this would be WebRTC stream
       videoRef.current.srcObject = null;
     }
   }, [isVideoOff]);
@@ -38,9 +39,9 @@ const VideoPanel = ({
     const bars = [];
     const levels = { excellent: 4, good: 3, fair: 2, poor: 1 };
     const level = levels?.[connectionQuality] || 0;
-    
+
     for (let i = 0; i < 4; i++) {
-      bars?.push(
+      bars.push(
         <div
           key={i}
           className={`w-1 bg-current transition-all duration-300 ${
@@ -69,24 +70,18 @@ const VideoPanel = ({
             </div>
           </div>
         ) : (
-          <>
-            <video
-              ref={videoRef}
-              className="w-full h-full object-cover"
-              autoPlay
-              muted={isMainVideo}
-              playsInline
-            />
-            {/* Placeholder for demo */}
-            <div className="absolute inset-0 bg-gradient-to-br from-blue-600/20 to-purple-600/20 flex items-center justify-center">
-              <div className="text-center">
-                <div className="w-20 h-20 bg-white/10 rounded-full flex items-center justify-center mx-auto mb-4">
-                  <Icon name="Video" size={40} className="text-white" />
-                </div>
-                <p className="text-white font-medium text-lg">{participantName}</p>
-              </div>
-            </div>
-          </>
+          <EmotionCam
+            className="w-full h-full"
+            width={1280}
+            height={720}
+            backendUrl={process.env.REACT_APP_EMOTION_URL || "http://127.0.0.1:8000/api/emotion"}
+            intervalMs={500}
+            topN={3}
+            onResult={(json) => {
+              // Callback disponível se quiser emitir eventos para um painel pai
+              // console.log("Emotion:", json?.dominant_overall);
+            }}
+          />
         )}
 
         {/* Connection Quality Indicator */}

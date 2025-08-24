@@ -108,17 +108,16 @@ export default function CameraSelector({
         <div className="text-xs text-red-400 mb-2">{errorMsg}</div>
       )}
 
-    <video
-    autoPlay
-    playsInline
-    muted
-    ref={(el) => {
-        if (el && stream) {
-        el.srcObject = stream;
-        }
-    }}
-    className="w-full h-full"
-    />
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted
+        width={width}
+        height={height}
+        className="rounded-lg"
+        style={{ background: "#0b1420" }}
+      />
     </div>
   );
 }

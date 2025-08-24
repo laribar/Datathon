@@ -3,7 +3,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import Icon from '../../../components/AppIcon';
 import Button from '../../../components/ui/Button';
 import Input from '../../../components/ui/Input';
-import EmotionCam from '../../../components/ui/EmotionCam';
+import EmotionCam from '../../../pages/video-interview-room/components/EmotionCam';
 
 const LiveChat = ({ isOpen, onToggle }) => {
   const [dominantEmotion, setDominantEmotion] = useState(null); // sem TS em .jsx

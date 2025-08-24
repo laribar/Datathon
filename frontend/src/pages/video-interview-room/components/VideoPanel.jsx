@@ -2,7 +2,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import Icon from '../../../components/AppIcon';
 import Button from '../../../components/ui/Button';
-import EmotionCam from '../../../components/ui/EmotionCam';
+import EmotionCam from '../../../pages/video-interview-room/components/EmotionCam';
 
 const VideoPanel = ({
   isMainVideo = false,

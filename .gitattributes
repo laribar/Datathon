@@ -3,3 +3,5 @@ data/*.json filter=lfs diff=lfs merge=lfs -text
 data/applicants.json filter=lfs diff=lfs merge=lfs -text
 data/prospects.json filter=lfs diff=lfs merge=lfs -text
 data/vagas.json filter=lfs diff=lfs merge=lfs -text
+models/sbert_encoder/model.safetensors filter=lfs diff=lfs merge=lfs -text
+data/applicants_clean.csv filter=lfs diff=lfs merge=lfs -text

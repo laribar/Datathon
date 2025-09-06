@@ -14,6 +14,3 @@ data/*.csv
 !data/processed/matches.csv
 !data/processed/no_matches.csv
 
-# Modelos
-models/sbert_encoder/
-models/modelo_match_xgboost.pkl

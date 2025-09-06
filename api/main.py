@@ -53,6 +53,12 @@ class VagaInput(BaseModel):
 # ============================
 # Endpoint da API
 # ============================
+
+@app.get("/rankear_candidatos")
+async def rankear_get():
+    return {"info": "Use POST com vaga_text e top_n para rankear candidatos"}
+
+
 @app.post("/rankear_candidatos")
 async def rankear_candidatos(input_data: VagaInput):
     """

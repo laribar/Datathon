@@ -1,6 +1,5 @@
 ﻿# Python / venv
 __pycache__/
-*.pyc
 .venv/
 .env
 
@@ -8,23 +7,13 @@ __pycache__/
 .vscode/
 .idea/
 
-# Dados pesados (mantém só amostras)
-data/*
-!data/samples/
-!data/samples/**
+# Dados pesados (ignora apenas os arquivos grandes específicos)
+data/*.json
+data/*.csv
+!data/processed/pairs.parquet
+!data/processed/matches.csv
+!data/processed/no_matches.csv
 
-# CSVs/JSONs grandes específicos
-data/applicants_clean.csv
-data/prospects_clean.csv
-data/vagas_clean.csv
-data/processed/
-data/data_csv/
-
-# Modelos: manter vazia (apenas artefatos pequenos)
-backend/models/*
-!backend/models/.gitkeep
-
-# Front/legados
-streamlit/
-frontend/
-notebooks/
+# Modelos
+models/sbert_encoder/
+models/modelo_match_xgboost.pkl

@@ -1,0 +1,30 @@
+﻿# Python / venv
+__pycache__/
+*.pyc
+.venv/
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# Dados pesados (mantém só amostras)
+data/*
+!data/samples/
+!data/samples/**
+
+# CSVs/JSONs grandes específicos
+data/applicants_clean.csv
+data/prospects_clean.csv
+data/vagas_clean.csv
+data/processed/
+data/data_csv/
+
+# Modelos: manter vazia (apenas artefatos pequenos)
+backend/models/*
+!backend/models/.gitkeep
+
+# Front/legados
+streamlit/
+frontend/
+notebooks/

@@ -2,7 +2,7 @@ import pandas as pd
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from sentence_transformers import SentenceTransformer, util
+from sentence_transformers import SentenceTransformer
 import joblib
 import numpy as np
 import os
@@ -10,9 +10,11 @@ import os
 # ============================
 # Configurações do ambiente
 # ============================
-# Define o caminho base do projeto. No Render, ele será a raiz do seu repositório.
+# Define o caminho base do projeto.
 PROJECT_ROOT = Path(__file__).parent.parent
 MODEL_DIR = PROJECT_ROOT / "models"
+MODEL_NAME = "modelo_match_xgboost.pkl"
+ENCODER_NAME = "sbert_encoder"
 
 # Instancia a aplicação FastAPI
 app = FastAPI(title="Serviço de Ranking de Candidatos")
@@ -22,9 +24,12 @@ app = FastAPI(title="Serviço de Ranking de Candidatos")
 # ============================
 def load_resources():
     try:
-        # Carrega o encoder
-        encoder = SentenceTransformer(str(MODEL_DIR / "sbert_encoder"))
+        # Carrega o encoder de Deep Learning (SentenceTransformer)
+        encoder = SentenceTransformer(str(MODEL_DIR / ENCODER_NAME))
         
+        # Carrega o modelo de Machine Learning (XGBoost)
+        xgb_model = joblib.load(MODEL_DIR / MODEL_NAME)
+
         # Carrega o dataset completo dos candidatos
         data_path = PROJECT_ROOT / "data" / "processed" / "pairs.parquet"
         df_candidates = pd.read_parquet(data_path)
@@ -32,16 +37,17 @@ def load_resources():
         
         # Gerar os embeddings dos candidatos (ou carregar se já existirem)
         print("Gerando embeddings dos candidatos para a API...")
-        cv_embeddings = encoder.encode(df_candidates["cv_text"].tolist(), convert_to_tensor=True, show_progress_bar=False)
+        cv_embeddings = encoder.encode(df_candidates["cv_text"].tolist(), convert_to_tensor=False, show_progress_bar=False)
+        
         df_candidates['cv_embeddings'] = cv_embeddings.tolist()
 
-        return encoder, df_candidates
+        return encoder, xgb_model, df_candidates
 
     except Exception as e:
         raise RuntimeError(f"Erro ao carregar recursos: {e}")
 
 # Executa o carregamento dos recursos na inicialização da API
-encoder, df_candidates = load_resources()
+encoder, xgb_model, df_candidates = load_resources()
 
 # ============================
 # Definição do esquema de entrada da API
@@ -62,24 +68,39 @@ async def rankear_get():
 @app.post("/rankear_candidatos")
 async def rankear_candidatos(input_data: VagaInput):
     """
-    Recebe o texto de uma vaga e retorna um ranking dos candidatos mais relevantes.
+    Recebe o texto de uma vaga, calcula a probabilidade de match usando o modelo XGBoost
+    e retorna um ranking dos candidatos mais relevantes.
     """
     try:
         # Gerar o embedding da vaga
-        vaga_embedding = encoder.encode(input_data.vaga_text, convert_to_tensor=True)
+        vaga_embedding = encoder.encode(input_data.vaga_text)
 
-        # Calcular a similaridade de cosseno
-        scores = util.cos_sim(vaga_embedding, df_candidates['cv_embeddings'].tolist())[0]
+        # Preparar os dados para a previsão do XGBoost
+        cv_embeddings_np = np.array(df_candidates['cv_embeddings'].tolist())
 
-        # Criar DataFrame com scores
+        # O embedding da vaga precisa ser broadcast para cada linha dos embeddings dos candidatos
+        vaga_embedding_tiled = np.tile(vaga_embedding, (cv_embeddings_np.shape[0], 1))
+        
+        # Criar o array de features exatamente como no treinamento
+        features = np.hstack([
+            vaga_embedding_tiled,
+            cv_embeddings_np,
+            np.abs(vaga_embedding_tiled - cv_embeddings_np),
+            vaga_embedding_tiled * cv_embeddings_np
+        ])
+
+        # Usar o modelo XGBoost para prever as probabilidades de match
+        probabilities = xgb_model.predict_proba(features)[:, 1] # Pega a probabilidade da classe 1 (match)
+
+        # Criar DataFrame com os scores de match
         df_scores = pd.DataFrame({
             'id_vaga': df_candidates['id_vaga'],
             'id_candidato': df_candidates['id_candidato'],
-            'score_similaridade': scores.tolist()
+            'score_match': probabilities.tolist()
         })
         
         # Ordenar e retornar o ranking
-        ranking = df_scores.sort_values(by='score_similaridade', ascending=False)
+        ranking = df_scores.sort_values(by='score_match', ascending=False)
         
         # Selecionar os top N
         top_candidatos = ranking.head(input_data.top_n).to_dict(orient='records')

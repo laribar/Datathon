@@ -1,12 +1,20 @@
-﻿# Python / venv
+﻿# Python
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+*.log
+# Virtual env
+venv/
+.env/
 .venv/
-.env
 
-# IDE
+# IDE/OS
 .vscode/
 .idea/
-
+.DS_Store
 # Dados pesados (ignora apenas os arquivos grandes específicos)
 data/*.json
 data/*.csv

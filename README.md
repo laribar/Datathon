@@ -5,7 +5,7 @@ git clone -b datathon-clean https://github.com/laribar/Datathon.git
 
 
 # 1. Garantir que está dentro da pasta do projeto
-cd C:\Users\sarah\Datathon
+cd C:\Datathon
 
 # 2. Criar (opcional, mas recomendado) um ambiente virtual
 python -m venv venv
@@ -15,4 +15,4 @@ python -m venv venv
 .\venv\Scripts\Activate
 
 # 4. Instalar as dependências do requirements.txt
-pip install -r requirements.txt
+pip install -r api/requirements.txt

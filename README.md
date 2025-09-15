@@ -16,3 +16,9 @@ python -m venv venv
 
 # 4. Instalar as dependências do requirements.txt
 pip install -r api/requirements.txt
+
+
+#para atualizar
+git add .
+git commit -m "comentario"
+git push origin datathon-clean

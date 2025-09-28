@@ -95,3 +95,24 @@ DATATHON/
 - **Render**
 
 ---
+
+## 🚀 Como Executar
+
+### 1. Clonar o repositório
+```bash
+git clone https://github.com/seu-repo/datathon.git
+cd datathon
+
+2. Criar ambiente virtual
+python -m venv .venv
+source .venv/bin/activate   # Linux/Mac
+.venv\Scripts\activate      # Windows
+
+3. Instalar dependências
+pip install -r app/requirements.txt
+
+4. Rodar API FastAPI
+uvicorn app.main:app --reload --port 8000
+
+5. Rodar Dashboard Streamlit
+streamlit run app/streamlit_app.py

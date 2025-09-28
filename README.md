@@ -6,8 +6,3 @@
 3. Rode
 
 
-
-
-git add .
-git commit -m "comentario"
-git push origin datathon-clean

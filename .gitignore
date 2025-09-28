@@ -16,8 +16,8 @@ venv/
 .idea/
 .DS_Store
 # Dados pesados (ignora apenas os arquivos grandes específicos)
-data/*.json
-data/*.csv
+#data/*.json
+#data/*.csv
 !data/processed/pairs.parquet
 !data/processed/matches.csv
 !data/processed/no_matches.csv

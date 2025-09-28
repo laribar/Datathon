@@ -20,40 +20,39 @@ A solução combina:
 
 DATATHON/
 │
-├── app/ # Backend da aplicação
-│ ├── main.py # API principal (FastAPI)
-│ ├── requirements.txt # Dependências
-│ └── streamlit_app.py # Dashboard em Streamlit
+├── app/                         # Backend da aplicação
+│   ├── main.py                   # API principal (FastAPI)
+│   ├── requirements.txt          # Dependências
+│   └── streamlit_app.py          # Dashboard em Streamlit
 │
-├── data/ # Bases de dados
-│ ├── processed/ # Dados tratados
-│ │ ├── applicants_clean.csv
-│ │ ├── prospects_clean.csv
-│ │ ├── vagas_clean.csv
-│ │ ├── applicants.json
-│ │ ├── prospects.json
-│ │ └── vagas.json
+├── data/                        # Bases de dados
+│   └── processed/                # Dados tratados
+│       ├── applicants_clean.csv
+│       ├── prospects_clean.csv
+│       ├── vagas_clean.csv
+│       ├── applicants.json
+│       ├── prospects.json
+│       └── vagas.json
 │
-├── models/ # Modelos treinados
-│ ├── sbert_encoder/ # Encoder SBERT
-│ └── modelo_match_xgboost.pkl # Modelo XGBoost final
+├── models/                      # Modelos treinados
+│   ├── sbert_encoder/            # Encoder SBERT
+│   └── modelo_match_xgboost.pkl  # Modelo XGBoost final
 │
-├── notebooks/ # Notebooks de exploração
-│ ├── Datathon.ipynb
-│ └── 01_exploracao_dados.ipynb
+├── notebooks/                   # Notebooks de exploração
+│   ├── Datathon.ipynb
+│   └── 01_exploracao_dados.ipynb
 │
-├── utils/ # Scripts auxiliares
-│ ├── json_to_csv_prospects.py
-│ ├── json_to_csv_vagas.py
-│ ├── map_files.py
-│ ├── transformar.py
-│ └── treinamento_modelo_match.py
+├── utils/                       # Scripts auxiliares
+│   ├── json_to_csv_prospects.py
+│   ├── json_to_csv_vagas.py
+│   ├── map_files.py
+│   ├── transformar.py
+│   └── treinamento_modelo_match.py
 │
-├── .env # Variáveis de ambiente
-├── render.yaml # Configuração Render
-├── runtime.txt # Versão do Python
-└── README.md # Documentação
-
+├── .env                         # Variáveis de ambiente
+├── render.yaml                   # Configuração Render
+├── runtime.txt                   # Versão do Python
+└── README.md                     # Documentação
 
 
 ---

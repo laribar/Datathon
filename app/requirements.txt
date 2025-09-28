@@ -1,12 +1,22 @@
+# === Backend (opcional, se ainda usar FastAPI) ===
 fastapi
 uvicorn
-pandas
-pyarrow
-sentence-transformers
-joblib
-scikit-learn
-xgboost
 
+# === Data / ML ===
+pandas==2.2.2
+pyarrow
+numpy>=1.26
+scikit-learn>=1.5
+xgboost
+joblib
+
+# === NLP / Embeddings ===
+torch>=2.3
+transformers>=4.41
+sentence-transformers>=2.6
+protobuf<5  # evita conflitos com transformers
+
+# === App ===
 streamlit==1.38.0
 requests==2.32.3
-pandas==2.2.2
+

@@ -20,7 +20,7 @@ import json
 import numpy as np
 import pandas as pd
 import streamlit as st
-from sentence_transformers import SentenceTransformer
+#from sentence_transformers import SentenceTransformer
 
 # ======================== CONFIG ========================
 EMB_DIR = Path(os.getenv("EMB_DIR", "data/embeddings"))
@@ -117,7 +117,19 @@ def get_or_build_embeddings(df: pd.DataFrame, text_col: str, npy_path: Path, met
 
 # ======================== CACHES ========================
 @st.cache_resource(show_spinner=False)
-def load_model(model_dir: str) -> SentenceTransformer:
+def load_model(model_dir: str):
+    import os
+    # import lazy: só carrega a lib quando realmente for usar
+    from sentence_transformers import SentenceTransformer
+
+    if not os.path.exists(model_dir) or not os.listdir(model_dir):
+        # fallback: baixa do hub para a sua pasta local
+        hf_name = os.getenv("HF_MODEL_NAME", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+        model = SentenceTransformer(hf_name)
+        os.makedirs(model_dir, exist_ok=True)
+        # salva o modelo baixado em model_dir
+        model.save(model_dir)
+        return model
     return SentenceTransformer(model_dir)
 
 

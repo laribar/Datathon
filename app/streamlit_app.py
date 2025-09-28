@@ -1,8 +1,9 @@
-# streamlit_app.py — Código Final Especializado e Corrigido (v1.3.3 - Log Limpo)
+# streamlit_app.py — Código Final Especializado e Corrigido (v1.3.4 - Base Completa)
 import os, re, json, hashlib, io 
 from pathlib import Path
 from typing import List, Tuple
-
+import joblib # Adicionar esta linha
+from xgboost import XGBClassifier # Adicionar esta linha (para tipagem e segurança)
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -11,7 +12,7 @@ from scipy.spatial.distance import cosine # Importação não utilizada, mas man
 
 # ======================== CONFIG ========================
 APP_NAME = "RECRUT.AI 🚀"
-APP_VERSION = "1.3.3 (Log Limpo)" # Versão atualizada
+APP_VERSION = "1.3.4 (Base Completa)" # Versão atualizada
 
 # Limiar padrão para "Aprovação" no ranking
 DEFAULT_LIMIAR = float(os.getenv("SCORE_LIMIAR", "0.75"))
@@ -61,41 +62,60 @@ def proportional_score(sim: float, limiar: float) -> float:
     if sim >= limiar: return 100.0
     return max(0.0, (sim / limiar) * 100.0)
 
-# ======================== DATA LOADERS (MOVIDO PARA CIMA PARA CORRIGIR ERRO) ========================
+def _concat_all_columns(df: pd.DataFrame, new_col_name: str) -> pd.DataFrame:
+    """Concatena todas as colunas de texto do DataFrame em uma única coluna."""
+    df = df.copy()
+    
+    # Concatena todas as colunas (exceto a nova) em uma string
+    text_cols = [col for col in df.columns if col != new_col_name]
+    
+    # Combina todas as colunas em uma única string, separando por espaço
+    df[new_col_name] = ""
+    for col in text_cols:
+        df[new_col_name] += " " + df[col].astype(str)
+    
+    # Remove espaços extras e aplica clean_text
+    df[new_col_name] = df[new_col_name].str.strip()
+    df[new_col_name] = df[new_col_name].apply(clean_text)
+    
+    return df
 
-@st.cache_data(show_spinner=False)
-def _concat_all_columns(df: pd.DataFrame, target_col: str) -> pd.DataFrame:
-    """Concatena todas as colunas de texto em uma única coluna para o SBERT."""
-    out = df.copy()
-    if target_col in out.columns: out = out.drop(columns=[target_col])
-    # Tenta excluir colunas que são provavelmente IDs/índices
-    cols_to_concat = [c for c in out.columns if c.lower() not in ["id", "index", "uid", "score", "rank"]]
-    s = out[cols_to_concat].fillna("").astype(str)
-    # Concatena os valores não vazios separados por espaço
-    out[target_col] = s.apply(lambda row: " ".join([v for v in row.values if v != ""]).strip(), axis=1)
-    return out
+# ======================== DATA LOADERS ========================
 
 @st.cache_data(show_spinner=False)
 def _read_csv_local_or_url(local_path: str, url_env: str | None) -> pd.DataFrame | None:
     """Carrega CSV da URL (Prioridade) ou do disco local (Fallback)."""
+    
+    # Parâmetros de leitura robustos para CSVs problemáticos
+    READ_CSV_PARAMS = {
+        'sep': None,              # Auto-detect
+        'encoding': 'utf-8', 
+        'on_bad_lines': 'skip',
+        'engine': 'python',
+        'quoting': 3,            # QUOTE_NONE
+        'skipinitialspace': True
+    }
+
     # 1. Tenta URL (Prioridade - Para deploy Cloud)
     if url_env:
         try:
-            r = requests.head(url_env, timeout=5)
+            r = requests.head(url_env, timeout=10)
             if r.status_code == 200:
-                df = pd.read_csv(url_env)
-                st.info(f"🔗 Dados lidos da URL: {url_env}")
+                df = pd.read_csv(url_env, **READ_CSV_PARAMS)
+                st.info(f"🔗 Dados lidos da URL: {url_env} ({len(df)} registros)")
                 return df
-        except Exception: 
+        except Exception as e:
+            st.warning(f"⚠️ Falha ao carregar URL {url_env}: {e}")
             pass
             
     # 2. Tenta caminho local (Fallback - Para teste local)
     try:
         if os.path.exists(local_path): 
-            df = pd.read_csv(local_path)
-            st.info(f"📂 Dados lidos do disco local: {local_path}")
+            df = pd.read_csv(local_path, **READ_CSV_PARAMS)
+            st.info(f"📂 Dados lidos do disco local: {local_path} ({len(df)} registros)")
             return df
-    except Exception: 
+    except Exception as e:
+        st.warning(f"⚠️ Falha ao carregar arquivo local {local_path}: {e}")
         pass
         
     return None
@@ -109,7 +129,7 @@ def load_fixed_bases() -> Tuple[pd.DataFrame, pd.DataFrame, list]:
     cand = _read_csv_local_or_url(BASE_CANDIDATOS_PATH, CANDIDATOS_CSV_URL) 
     vaga = _read_csv_local_or_url(BASE_VAGAS_PATH, VAGAS_CSV_URL)
 
-    # Fallback para dados de Amostra (se nenhum arquivo for encontrado)
+    # Verificação mais detalhada dos dados carregados
     if cand is None or cand.empty:
         logs.append("⚠️ Não encontrei candidatos via URL ou local. Usando amostra.")
         cand = pd.DataFrame({
@@ -119,6 +139,10 @@ def load_fixed_bases() -> Tuple[pd.DataFrame, pd.DataFrame, list]:
             "cidade": ["São Paulo", "Rio de Janeiro"],
             "id": [1, 2]
         })
+    else:
+        logs.append(f"✅ Candidatos carregados: {len(cand)} registros, {len(cand.columns)} colunas")
+        logs.append(f"   Colunas: {list(cand.columns)}")
+        
     if vaga is None or vaga.empty:
         logs.append("⚠️ Não encontrei vagas via URL ou local. Usando amostra.")
         vaga = pd.DataFrame({
@@ -126,19 +150,19 @@ def load_fixed_bases() -> Tuple[pd.DataFrame, pd.DataFrame, list]:
             "requisitos": ["Python, Spark, Airflow, AWS", "Java, Spring Boot, SQL, REST APIs"],
             "descricao": ["Projetos de dados em ambiente cloud. Criação de pipelines ETL.", "Desenvolvimento de microserviços de alta performance."]
         })
+    else:
+        logs.append(f"✅ Vagas carregadas: {len(vaga)} registros, {len(vaga.columns)} colunas")
+        logs.append(f"   Colunas: {list(vaga.columns)}")
         
     # Concatena colunas de texto para o SBERT
     cand = _concat_all_columns(cand, "cv_text")
     vaga = _concat_all_columns(vaga, "vaga_text")
     
-    logs.append(f"✅ Bases carregadas: {len(cand)} candidatos e {len(vaga)} vagas.")
+    logs.append(f"✅ Bases processadas: {len(cand)} candidatos e {len(vaga)} vagas.")
     
     return cand, vaga, logs
 
 # ======================== EMBEDDING CACHE UTILS ========================
-# NOTA: O restante das funções de utilidade (cache, modelo) é idêntico ao que você já tinha,
-# mas foram movidas para baixo de 'DATA LOADERS' para garantir que tudo o que for chamado na 
-# inicialização (main) já esteja definido.
 
 @st.cache_data(show_spinner=False)
 def _hash_dataframe(df: pd.DataFrame) -> str:
@@ -236,6 +260,30 @@ def get_or_build_embeddings(df: pd.DataFrame, text_col: str, model_dir: str) -> 
     return embs
 
 # ======================== MODEL / ENCODER ========================
+
+XGB_MODEL_NAME = os.getenv("XGB_MODEL_NAME", "modelo_match_xgboost.pkl")
+XGB_MODEL_PATH = Path(os.getenv("XGB_MODEL_PATH", "models") / XGB_MODEL_NAME) # Ajuste de caminho
+
+@st.cache_resource(show_spinner="Carregando Modelo de Ranqueamento (XGBoost)...", ttl=None)
+def load_xgb_model(model_path: Path) -> XGBClassifier | None:
+    """Carrega o modelo XGBoost treinado a partir de um arquivo .pkl."""
+    if not model_path.exists():
+        st.error(f"❌ Falha crítica: Modelo XGBoost não encontrado em: {model_path}")
+        return None
+    try:
+        model = joblib.load(model_path)
+        # Opcional: Garante que é um XGBoost Classifier (você pode remover se der erro de tipagem)
+        # from xgboost import XGBClassifier
+        # if not isinstance(model, XGBClassifier):
+        #      st.error(f"❌ Erro: O arquivo não contém um modelo XGBClassifier válido.")
+        #      return None
+        st.success(f"✅ Modelo XGBoost carregado de: **{model_path}**")
+        return model
+    except Exception as e:
+        st.error(f"❌ Falha ao carregar modelo XGBoost: {e}")
+        return None
+
+
 @st.cache_resource(show_spinner="Carregando Encoder (Priorizando Modelo Local)...", ttl=None)
 def load_model(model_path: str):
     """Carrega o SentenceTransformer, priorizando o modelo local."""
@@ -266,7 +314,7 @@ def embed_texts(texts: List[str], model_path: str) -> np.ndarray:
     model = load_model(model_path)
     # Aplica a limpeza antes de embedar
     texts = [clean_text(t) for t in texts] 
-    # **IMPORTANTE**: Normaliza os embeddings para garantir que o produto escalar seja a similaridade do cosseno.
+    # **IMPORTANTE**: Normaliza os embeddings
     return model.encode(texts, normalize_embeddings=True, show_progress_bar=False, convert_to_numpy=True)
 
 @st.cache_data(show_spinner="Gerando embedding...", ttl=3600, max_entries=20)
@@ -278,6 +326,33 @@ def embed_text(text: str, model_path: str) -> np.ndarray:
     emb = model.encode(text_clean, normalize_embeddings=True, show_progress_bar=False, convert_to_numpy=True)
     return emb.flatten()
 
+def generate_xgb_features(vaga_emb: np.ndarray, cv_embs: np.ndarray) -> np.ndarray:
+    """
+    Gera o array de features NxF para o modelo XGBoost, replicando a lógica de treino:
+    [vaga_emb, cv_embs, |vaga_emb - cv_embs|, vaga_emb * cv_embs]
+    
+    vaga_emb: (D,) - Embedding da vaga (1D)
+    cv_embs: (N, D) - Embeddings dos candidatos (2D)
+    Retorna: (N, 4*D) - Features prontos para o predict do XGBoost
+    """
+    if vaga_emb.ndim == 1:
+        # Repete o embedding da vaga N vezes para o empilhamento
+        N = cv_embs.shape[0]
+        vaga_embs_repeated = np.repeat(vaga_emb[np.newaxis, :], N, axis=0)
+    else:
+        # Se for um batch de vagas (N, D), usa diretamente
+        vaga_embs_repeated = vaga_emb
+
+    # A função np.hstack faz o empilhamento horizontal das quatro matrizes
+    features = np.hstack([
+        vaga_embs_repeated, # 1. Vaga (v)
+        cv_embs,            # 2. CV (c)
+        np.abs(vaga_embs_repeated - cv_embs), # 3. Diferença Absoluta (|v - c|)
+        vaga_embs_repeated * cv_embs          # 4. Produto Hadamard (v * c)
+    ])
+    
+    return features
+
 # ======================== LÓGICA DE INICIALIZAÇÃO ========================
 
 # 1. Configurações da Página 
@@ -287,14 +362,32 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 2. Carrega o modelo (e exibe o log de sucesso apenas UMA VEZ)
-# Nota: load_model é @st.cache_resource e será executada apenas uma vez.
-with st.spinner("Carregando modelo Sentence-BERT..."):
+# 2. Carrega os Modelos (SBERT e XGBoost)
+# O SBERT é carregado primeiro, pois é usado para gerar embeddings para o XGBoost.
+with st.spinner("Carregando modelos (SBERT e XGBoost)..."):
+    # Carrega o Encoder SBERT
     load_model(MODEL_DIR)
-    st.success(f"✅ Modelo customizado carregado com sucesso de: **{MODEL_DIR}**")
+    st.success(f"✅ Encoder SBERT carregado com sucesso de: **{MODEL_DIR}**")
+
+    # Carrega o Modelo de Ranqueamento XGBoost
+    xgb_ranking_model = load_xgb_model(XGB_MODEL_PATH)
+    # Armazena o modelo na session state para uso posterior
+    st.session_state["xgb_ranking_model"] = xgb_ranking_model 
 
 # 3. Carrega Bases Fixas (e concatena o texto)
 candidatos_df, vagas_df, _logs = load_fixed_bases()
+
+# DEBUG: Informações de debug na sidebar
+st.sidebar.write("---")
+st.sidebar.subheader("📊 Debug Info")
+st.sidebar.write(f"Candidatos: {len(candidatos_df)} registros")
+st.sidebar.write(f"Vagas: {len(vagas_df)} registros")
+st.sidebar.write(f"XGBoost Status: {'✅ Pronto' if xgb_ranking_model else '❌ Ausente'}") # Novo item
+
+# Exibir logs detalhados
+with st.sidebar.expander("Logs de Carregamento"):
+    for log in _logs:
+        st.sidebar.text(log)
 
 # Guarda bases na session_state
 st.session_state["candidatos_df"] = candidatos_df.copy()
@@ -358,10 +451,6 @@ with st.sidebar:
             
             st.success(f"Cache gerado. Recarregue a página (F5) para usar o novo cache na inicialização.")
 
-# Exibe logs de carregamento de base
-# Nota: Os logs de carregamento de base foram movidos para a área de inicialização (Passo 4)
-# para aparecerem antes dos warnings de reconstrução de embedding.
-
 st.title("🔎 RECRUT.AI - Match Semântico (Especialização)")
 st.markdown(f"Análise de similaridade entre Curricula e Vagas usando **Sentence-BERT** (Modelo: **{MODEL_DIR}**)")
 
@@ -405,7 +494,7 @@ with tab_ranking:
         col_controles = st.columns([1, 4])
         with col_controles[0]:
             top_n = st.number_input("Top N Candidatos", 1, len(cdf), min(10, len(cdf)), key="topn_ranking")
-        with col_controles[1]:
+with col_controles[1]:
             if st.button("🔍 GERAR RANKING", key="btn_ranking", use_container_width=True):
                 with st.spinner("Calculando ranking..."):
                     
@@ -426,26 +515,74 @@ with tab_ranking:
                         # Recalcula o embedding da vaga (já é normalizado e flatten)
                         emb_vaga = embed_text(vaga_text_sel, MODEL_DIR) 
 
-                    # 2. Cálculo de similaridade (Produto escalar, pois ambos estão normalizados)
-                    # O produto escalar entre vetores unitários é a similaridade do cosseno
-                    sims = emb_cvs @ emb_vaga.T
+                    # =======================================================
+                    # 2. CÁLCULO DO SCORE: XGBoost vs. Similaridade de Cosseno
+                    # =======================================================
                     
-                    # Ordenação e Top N
-                    order = np.argsort(-sims)[:int(top_n)]
+                    xgb_model = st.session_state.get("xgb_ranking_model")
                     
+                    if xgb_model:
+                        st.info("🧠 Usando modelo **XGBoost** para Ranqueamento por **Probabilidade de Match**.")
+                        
+                        # Geração dos features (combinação de embeddings)
+                        features = generate_xgb_features(emb_vaga, emb_cvs)
+
+                        # Previsão da probabilidade de ser "Match" (label 1)
+                        # O predict_proba retorna [[Prob_Negativa, Prob_Positiva], ...]
+                        probs = xgb_model.predict_proba(features)[:, 1] 
+                        
+                        # O score principal para ranqueamento é a probabilidade
+                        scores_array = probs 
+                        
+                        # O limiar de aprovação é 0.50 (padrão de classificação)
+                        limiar_aprovacao = 0.50 
+                        
+                        # Calcula a Similaridade de Cosseno para referência
+                        sims = emb_cvs @ emb_vaga.T
+                        
+                    else:
+                        # Fallback para o Match Semântico (SBERT Simples)
+                        st.warning("⚠️ Modelo XGBoost indisponível. Usando **Similaridade de Cosseno** para ranqueamento.")
+                        
+                        # 2. Cálculo de similaridade (Produto escalar, pois ambos estão normalizados)
+                        sims = emb_cvs @ emb_vaga.T
+                        
+                        # A similaridade é o score a ser ranqueado
+                        scores_array = sims
+                        
+                        # O limiar é o do slider
+                        limiar_aprovacao = limiar 
+                    
+                    # 3. Ordenação e Top N (sempre ordena pelo scores_array)
+                    order = np.argsort(-scores_array)[:int(top_n)]
+                    
+                    # =======================================================
+                    # 4. Geração do DataFrame de Resultados
+                    # =======================================================
                     rows = []
                     for rank, i in enumerate(order, start=1):
-                        sim = float(sims[i])
-                        score = proportional_score(sim, limiar)
+                        main_score = float(scores_array[i])
+                        cossine_sim = float(sims[i]) # Similaridade de Cosseno real (sempre calculada)
+
+                        if xgb_model:
+                            # Se for XGBoost, o Score é a Probabilidade * 100
+                            score_porcentagem = round(main_score * 100, 2)
+                            aprovado = bool(main_score >= limiar_aprovacao)
+                        else:
+                            # Se for SBERT, usa a lógica proporcional
+                            score_porcentagem = proportional_score(main_score, limiar_aprovacao)
+                            aprovado = bool(main_score >= limiar_aprovacao)
+                            
                         
                         row = {
                             "Rank": rank, 
-                            "Similaridade": round(sim, 6),
-                            "Score (%)": round(score, 2), 
-                            "Aprovado": bool(sim >= limiar),
+                            "Similaridade": round(cossine_sim, 6),
+                            # Renomeado para Score (%) para refletir a probabilidade (XGBoost) ou proporcional (SBERT)
+                            "Score (%)": round(score_porcentagem, 2), 
+                            "Aprovado": aprovado,
                         }
                         
-                        # Adiciona metadados do candidato para exibição
+                        # Adiciona metadados do candidato para exibição (sem alteração)
                         for col in CAND_META_COLS:
                             if col in cdf.columns: 
                                 val = cdf.iloc[i][col]
@@ -454,7 +591,7 @@ with tab_ranking:
                                     row[col] = val[:100] + "..." if len(val) > 100 else val
                                 else:
                                     row[col] = val
-                        
+                            
                         rows.append(row)
                     
                     res = pd.DataFrame(rows)
@@ -463,9 +600,9 @@ with tab_ranking:
 
                     # --- Visualização de Resultados ---
                     col_config = {
-                        # A similaridade máxima é 1.0 (vetores idênticos e normalizados)
-                        "Similaridade": st.column_config.ProgressColumn("Similaridade", format="%.4f", min_value=0.0, max_value=1.0),
-                        "Score (%)": st.column_config.ProgressColumn("Score (%)", format="%f", min_value=0, max_value=100),
+                        "Similaridade": st.column_config.ProgressColumn("Similaridade (Cosseno)", format="%.4f", min_value=0.0, max_value=1.0),
+                        # O Score (%) agora é o principal ranqueador
+                        "Score (%)": st.column_config.ProgressColumn("Score Principal (%)", format="%f", min_value=0, max_value=100),
                         "Aprovado": st.column_config.CheckboxColumn("Aprovado?", disabled=True),
                         "nome": "Nome",
                         "cidade": "Cidade",
@@ -480,7 +617,8 @@ with tab_ranking:
                     col1, col2, col3 = st.columns(3)
                     with col1: st.metric("Candidatos Aprovados", aprovados)
                     with col2: st.metric("Taxa de Aprovação", f"{aprovados/len(res)*100:.1f}%")
-                    with col3: st.metric("Melhor Similaridade", f"{res.iloc[0]['Similaridade']:.4f}")
+                    # O melhor score agora é o Score Principal (%)
+                    with col3: st.metric("Melhor Score", f"{res.iloc[0]['Score (%)']:.2f}%")
                     
                     st.download_button(
                         "💾 Baixar Ranking (CSV)", 
@@ -489,8 +627,8 @@ with tab_ranking:
                         mime="text/csv",
                         key="dl_ranking"
                     )
-    else:
-        st.warning("Nenhuma vaga ou candidato disponível na base de dados carregada para ranking.")
+            else:
+                st.warning("Nenhuma vaga ou candidato disponível na base de dados carregada para ranking.")
 
 
 # ############## TAB 2: Bases de Dados ##############

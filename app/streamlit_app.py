@@ -1,7 +1,7 @@
 # streamlit_app.py — Código Final para Especialização (Modelo Local)
-import os, re, json, hashlib
+import os, re, json, hashlib, io # <-- ADICIONADO 'io' para leitura binária de URLs
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Tuple
 
 import numpy as np
 import pandas as pd
@@ -28,12 +28,16 @@ BASE_VAGAS_PATH = os.getenv("BASE_VAGAS_PATH", "data/vagas_clean.csv")
 CANDIDATOS_CSV_URL = os.getenv("CANDIDATOS_CSV_URL") 
 VAGAS_CSV_URL = os.getenv("VAGAS_CSV_URL") 
 
-# Cache de embeddings (mantido, mas opcional/efêmero no Cloud)
+# Cache de embeddings (pode ser lido do GitHub ou gerado localmente)
 EMB_DIR = Path(os.getenv("EMB_DIR", "data/embeddings")); EMB_DIR.mkdir(parents=True, exist_ok=True)
 CAND_EMB_PATH = EMB_DIR / "candidatos.npy"
 CAND_META_PATH = EMB_DIR / "candidatos.meta.json"
 VAGA_EMB_PATH = EMB_DIR / "vagas.npy"
 VAGA_META_PATH = EMB_DIR / "vagas.meta.json"
+
+# NOVAS VARIÁVEIS DE AMBIENTE para o cache remoto (URLs RAW)
+CAND_EMB_URL = os.getenv("CAND_EMB_URL") 
+CAND_META_URL = os.getenv("CAND_META_URL")
 
 # ======================== TEXT UTILS (Sem Alteração) ========================
 _whitespace_re = re.compile(r"\s+")

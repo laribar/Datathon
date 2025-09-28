@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import List, Tuple
 # Importações essenciais para o modelo de ranqueamento
 import joblib 
+import io 
 from xgboost import XGBClassifier 
 import numpy as np
 import pandas as pd

@@ -1,16 +1,16 @@
 # === Data / ML ===
 pandas==2.2.2
 pyarrow
-numpy>=1.26
+numpy<2.0,>=1.26 # Restrito a versões abaixo de 2.0 para evitar grandes quebras
 scikit-learn>=1.5
-xgboost
+xgboost<2.1 # Versões mais antigas tendem a ser mais estáveis com modelos serializados
 joblib
 
 # === NLP / Embeddings ===
 torch>=2.3
 transformers>=4.41
 sentence-transformers>=2.6
-protobuf<5  # evita conflitos com transformers
+protobuf<5  # evita conflitos com transformers
 
 # === App ===
 streamlit==1.38.0

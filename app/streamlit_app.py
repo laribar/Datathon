@@ -262,7 +262,7 @@ def get_or_build_embeddings(df: pd.DataFrame, text_col: str, model_dir: str) -> 
 # ======================== MODEL / ENCODER ========================
 
 XGB_MODEL_NAME = os.getenv("XGB_MODEL_NAME", "modelo_match_xgboost.pkl")
-XGB_MODEL_PATH = Path(os.getenv("XGB_MODEL_PATH", "models") / XGB_MODEL_NAME) # Ajuste de caminho
+XGB_MODEL_PATH = Path(os.getenv("XGB_MODEL_PATH", "models")) / XGB_MODEL_NAME
 
 @st.cache_resource(show_spinner="Carregando Modelo de Ranqueamento (XGBoost)...", ttl=None)
 def load_xgb_model(model_path: Path) -> XGBClassifier | None:

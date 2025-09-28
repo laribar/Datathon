@@ -681,12 +681,14 @@ with tab_bases:
     
     col_dl_c, col_prev_c = st.columns([1, 4])
     with col_dl_c:
-        # Adiciona verificação .empty para desativar o download se o DataFrame estiver vazio
         if not cand_full.empty:
+            # Usa StringIO para escrever o CSV em um buffer de string (menos consumo de memória)
+            csv_buffer = io.StringIO()
+            cand_full.to_csv(csv_buffer, index=False)
+        
             st.download_button(
                 "💾 Baixar Candidatos (CSV)", 
-                # Esta linha 681 agora é segura
-                cand_full.to_csv(index=False).encode("utf-8"),
+                csv_buffer.getvalue(), # Obtém a string do buffer (Streamlit lida com a codificação)
                 file_name="candidatos_full.csv", 
                 mime="text/csv"
             )

@@ -54,3 +54,47 @@ DATATHON/
 ├── render.yaml                   # Configuração Render
 ├── runtime.txt                   # Versão do Python
 └── README.md                     # Documentação
+
+
+---
+
+## ⚙️ Fluxo do Projeto
+
+1. **📥 Coleta de Dados**  
+   - `applicants.json` → currículos  
+   - `prospects.json` → candidatos prospectados  
+   - `vagas.json` → descrições de vagas  
+
+2. **🧹 Processamento**  
+   - Conversão JSON → CSV (`json_to_csv_*`).  
+   - Limpeza e padronização de texto (`transformar.py`).  
+
+3. **🔎 Exploração de Dados**  
+   - `01_exploracao_dados.ipynb` → análise inicial de skills, vagas e distribuição.  
+
+4. **🧠 Modelagem**  
+   - **SBERT Encoder** → embeddings de CVs e vagas.  
+   - **XGBoost** → classificador de compatibilidade.  
+   - Treinamento automatizado (`treinamento_modelo_match.py`).  
+
+5. **🖥️ Interface**  
+   - **Streamlit (`streamlit_app.py`)** → upload de CVs/vagas, visualização de matches.  
+   - **FastAPI (`main.py`)** → rotas `/match` e `/batch_match`.  
+
+6. **☁️ Deploy**  
+   - Configurado no **Render** via `render.yaml` e `runtime.txt`.  
+
+---
+
+## 📊 Tecnologias
+
+- **Python 3.10+**
+- **FastAPI** (API REST)
+- **Streamlit** (Dashboard)
+- **Sentence Transformers (SBERT)**
+- **XGBoost**
+- **Pandas / NumPy**
+- **Scikit-learn**
+- **Render**
+
+---

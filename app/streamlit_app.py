@@ -1,4 +1,4 @@
-# streamlit_app.py — Código Final Especializado e Corrigido
+# streamlit_app.py — Código Final Especializado e Corrigido (v1.3.3 - Log Limpo)
 import os, re, json, hashlib, io 
 from pathlib import Path
 from typing import List, Tuple
@@ -7,11 +7,11 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import requests 
-from scipy.spatial.distance import cosine
+from scipy.spatial.distance import cosine # Importação não utilizada, mas mantida por consistência
 
 # ======================== CONFIG ========================
 APP_NAME = "RECRUT.AI 🚀"
-APP_VERSION = "1.3.2 (Finalizada)" 
+APP_VERSION = "1.3.3 (Log Limpo)" # Versão atualizada
 
 # Limiar padrão para "Aprovação" no ranking
 DEFAULT_LIMIAR = float(os.getenv("SCORE_LIMIAR", "0.75"))
@@ -28,8 +28,6 @@ CANDIDATOS_CSV_URL = os.getenv("CANDIDATOS_CSV_URL")
 VAGAS_CSV_URL = os.getenv("VAGAS_CSV_URL") 
 
 # Cache de embeddings: Remoto (URLs RAW do GitHub - PRIORIDADE MÁXIMA)
-# ASsegure-se que estas URLs apontam para a versão RAW do GitHub, como no seu caminho:
-# janbar/Datathon/tree/main/data/embeddings
 CAND_EMB_URL = os.getenv("CAND_EMB_URL", "https://raw.githubusercontent.com/janbar/Datathon/main/data/embeddings/candidatos.npy") 
 CAND_META_URL = os.getenv("CAND_META_URL", "https://raw.githubusercontent.com/janbar/Datathon/main/data/embeddings/candidatos.meta.json")
 VAGA_EMB_URL = os.getenv("VAGA_EMB_URL", "https://raw.githubusercontent.com/janbar/Datathon/main/data/embeddings/vagas.npy") 
@@ -97,7 +95,6 @@ def _load_embeddings_url(npy_url: str | None, meta_url: str | None) -> Tuple[np.
         st.info(f"⚡ Cache de embeddings carregado via URL: {npy_url}")
         return embs, meta
     except Exception as e:
-        # st.error(f"Erro ao carregar URL Cache: {e}") # Descomente para debug
         return None, {}
 
 def _load_embeddings_local(npy_path: Path, meta_path: Path) -> Tuple[np.ndarray | None, dict]:
@@ -153,17 +150,18 @@ def get_or_build_embeddings(df: pd.DataFrame, text_col: str, model_dir: str) -> 
 # ======================== MODEL / ENCODER ========================
 @st.cache_resource(show_spinner="Carregando Encoder (Priorizando Modelo Local)...", ttl=None)
 def load_model(model_path: str):
-    """Carrega o SentenceTransformer, priorizando o modelo local."""
+    """
+    Carrega o SentenceTransformer, priorizando o modelo local.
+    Os logs de sucesso foram removidos daqui para evitar duplicidade,
+    pois essa função é chamada múltiplas vezes pelo cache de embeddings.
+    """
     from sentence_transformers import SentenceTransformer
     
-    st.info(f"Fazendo load do modelo a partir do caminho: **{model_path}**")
     try:
         model = SentenceTransformer(model_path) 
-        st.success(f"✅ Modelo customizado carregado com sucesso de: **{model_path}**")
         return model
     except Exception as e:
-        # O modelo HF é usado como fallback caso o local falhe.
-        st.error(f"❌ Falha ao carregar modelo de: {model_path}. Tentando fallback: {HF_MODEL_NAME}. Erro: {e}")
+        # Tenta fallback para o modelo Hugging Face (mensagem de erro mantida)
         try:
             model = SentenceTransformer(HF_MODEL_NAME)
             st.warning(f"⚠️ Modelo padrão do Hugging Face carregado como fallback.")
@@ -272,8 +270,10 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 2. Carrega o modelo 
-load_model(MODEL_DIR)
+# 2. Carrega o modelo (e exibe o log de sucesso apenas UMA VEZ)
+with st.spinner("Carregando modelo Sentence-BERT..."):
+    load_model(MODEL_DIR)
+    st.success(f"✅ Modelo customizado carregado com sucesso de: **{MODEL_DIR}**")
 
 # 3. Carrega Bases Fixas (e concatena o texto)
 candidatos_df, vagas_df, _logs = load_fixed_bases()

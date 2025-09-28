@@ -118,11 +118,14 @@ with tab1:
                     st.error(f"Erro na requisição: {e}")
 
 
-# ========== TAB 2: BATCH CSV (CVs × Vagas) ==========
+# ========== TAB 2: BATCH CSV (CVs × Vagas com Top-N) ==========
 with tab2:
     st.subheader("📚 Match em Lote (CVs × Vagas)")
-    st.caption("Carregue dois arquivos CSV: um de Currículos e outro de Vagas. "
-               "O app vai concatenar as colunas escolhidas e calcular o match entre cada currículo e cada vaga.")
+    st.caption(
+        "Carregue dois CSVs: um de Currículos e outro de Vagas. "
+        "Escolha quais colunas compõem o texto de cada lado. "
+        "O app gera o cruzamento e mostra o **Top-N** por CV (ou por Vaga)."
+    )
 
     # Upload de arquivos
     cvs_file = st.file_uploader("Carregar CSV de Currículos", type=["csv"], key="cvs")
@@ -130,84 +133,130 @@ with tab2:
 
     clean_batch = st.checkbox("Aplicar limpeza básica", value=True, key="clean_batch")
 
+    # Parâmetros de ranking
+    c1, c2 = st.columns([1, 1])
+    with c1:
+        top_n = st.number_input("Top-N resultados", min_value=1, max_value=50, value=5, step=1)
+    with c2:
+        rank_mode = st.radio(
+            "Modo de ranking",
+            options=["Top-N por CV", "Top-N por Vaga"],
+            index=0,
+            horizontal=True,
+        )
+
     if cvs_file is not None and vagas_file is not None:
         try:
             df_cvs = pd.read_csv(cvs_file)
             df_vagas = pd.read_csv(vagas_file)
 
             st.write("### Amostra de Currículos")
-            st.dataframe(df_cvs.head(10))
+            st.dataframe(df_cvs.head(10), use_container_width=True)
             st.write("### Amostra de Vagas")
-            st.dataframe(df_vagas.head(10))
+            st.dataframe(df_vagas.head(10), use_container_width=True)
 
             # Escolha de colunas para concatenar
             st.write("### Configuração das colunas para concatenação")
-
             cv_cols = st.multiselect(
-                "Escolha as colunas do CSV de Currículos a usar no match",
+                "Colunas do CSV de Currículos",
                 df_cvs.columns.tolist(),
-                default=[c for c in df_cvs.columns if "curriculo" in c or "cv" in c or c == "curriculo_pt"]
+                default=[c for c in df_cvs.columns if "curriculo" in c or "cv" in c or c == "curriculo_pt"],
+                help="Essas colunas serão concatenadas para formar o texto do currículo."
             )
-
             vaga_cols = st.multiselect(
-                "Escolha as colunas do CSV de Vagas a usar no match",
+                "Colunas do CSV de Vagas",
                 df_vagas.columns.tolist(),
-                default=[c for c in df_vagas.columns if "vaga" in c or "descricao" in c or "titulo" in c]
+                default=[c for c in df_vagas.columns if "vaga" in c or "descricao" in c or "titulo" in c],
+                help="Essas colunas serão concatenadas para formar o texto da vaga."
             )
 
             if st.button("Gerar Matches", type="primary"):
                 if not cv_cols or not vaga_cols:
-                    st.error("Selecione pelo menos uma coluna em cada dataset!")
+                    st.error("Selecione pelo menos uma coluna em **cada** dataset.")
                 else:
                     with st.spinner("Calculando matches..."):
                         # Concatena colunas selecionadas
                         df_cvs["_texto_cv"] = df_cvs[cv_cols].astype(str).agg(" ".join, axis=1)
                         df_vagas["_texto_vaga"] = df_vagas[vaga_cols].astype(str).agg(" ".join, axis=1)
 
-                        # Monta pares cartesianos (cada CV × cada Vaga)
+                        # Campos de identificação (se existirem)
+                        cv_id_col = "id" if "id" in df_cvs.columns else None
+                        cv_nome_col = "nome" if "nome" in df_cvs.columns else None
+                        vaga_id_col = "id" if "id" in df_vagas.columns else None
+                        vaga_titulo_col = "titulo_vaga" if "titulo_vaga" in df_vagas.columns else None
+
+                        # Monta pares cartesianos: cada CV × cada Vaga
                         pairs = []
+                        index_map = []  # (i_cv, j_vaga)
                         for i, cv_row in df_cvs.iterrows():
                             for j, vaga_row in df_vagas.iterrows():
                                 pairs.append({
                                     "cv_text": cv_row["_texto_cv"],
                                     "vaga_text": vaga_row["_texto_vaga"],
                                 })
+                                index_map.append((i, j))
 
                         payload = {"pairs": pairs, "clean": clean_batch}
 
                         t0 = time.time()
-                        r = api_post("/match/batch", payload)
+                        r = api_post(API_URL, "/match/batch", payload)
                         elapsed = time.time() - t0
 
-                        # Reconstrói resultados em DataFrame
-                        results = []
-                        idx = 0
-                        for i, cv_row in df_cvs.iterrows():
-                            for j, vaga_row in df_vagas.iterrows():
-                                res = r["results"][idx]
-                                results.append({
-                                    "id_cv": cv_row.get("id", i),
-                                    "id_vaga": vaga_row.get("id", j),
-                                    "similarity": res["similarity"],
-                                    "score": res["score"],
-                                    "passed_threshold": res["passed_threshold"],
-                                })
-                                idx += 1
+                    # Reconstrói resultados com metadados
+                    records = []
+                    for k, item in enumerate(r["results"]):
+                        i, j = index_map[k]
+                        cv_row = df_cvs.loc[i]
+                        vaga_row = df_vagas.loc[j]
+                        records.append({
+                            "id_cv": cv_row[cv_id_col] if cv_id_col else i,
+                            "nome_cv": cv_row[cv_nome_col] if cv_nome_col else "",
+                            "id_vaga": vaga_row[vaga_id_col] if vaga_id_col else j,
+                            "titulo_vaga": vaga_row[vaga_titulo_col] if vaga_titulo_col else "",
+                            "similarity": item["similarity"],
+                            "score": item["score"],
+                            "passed_threshold": item["passed_threshold"],
+                        })
+                    df_all = pd.DataFrame(records)
 
-                        out = pd.DataFrame(results)
-
-                        st.success(f"Processado: {len(out)} combinações em {elapsed:.2f}s — Modelo: {r['model_name']}")
-                        st.dataframe(out)
-
-                        st.download_button(
-                            "Baixar resultados (CSV)",
-                            out.to_csv(index=False).encode("utf-8"),
-                            file_name="resultados_match.csv",
-                            mime="text/csv"
+                    # Aplica ranking
+                    if rank_mode == "Top-N por CV":
+                        df_ranked = (
+                            df_all.sort_values(["id_cv", "score"], ascending=[True, False])
+                                 .groupby("id_cv", as_index=False)
+                                 .head(int(top_n))
                         )
+                        st.success(
+                            f"Processado {len(df_all)} combinações em {elapsed:.2f}s — exibindo Top-{int(top_n)} **por CV**. "
+                            f"Modelo: {r['model_name']}"
+                        )
+                        # Ordena para visualização
+                        df_ranked = df_ranked.sort_values(["id_cv", "score"], ascending=[True, False])
+                    else:
+                        df_ranked = (
+                            df_all.sort_values(["id_vaga", "score"], ascending=[True, False])
+                                 .groupby("id_vaga", as_index=False)
+                                 .head(int(top_n))
+                        )
+                        st.success(
+                            f"Processado {len(df_all)} combinações em {elapsed:.2f}s — exibindo Top-{int(top_n)} **por Vaga**. "
+                            f"Modelo: {r['model_name']}"
+                        )
+                        df_ranked = df_ranked.sort_values(["id_vaga", "score"], ascending=[True, False])
+
+                    # Mostra tabela e oferece download
+                    st.dataframe(df_ranked, use_container_width=True)
+
+                    st.download_button(
+                        "Baixar resultados (CSV)",
+                        df_ranked.to_csv(index=False).encode("utf-8"),
+                        file_name="resultados_match_topN.csv",
+                        mime="text/csv"
+                    )
 
         except Exception as e:
             st.error(f"Erro ao processar os CSVs: {e}")
+
 
 
 # ========== TAB 3: EXPLAIN ==========

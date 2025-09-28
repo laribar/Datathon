@@ -40,7 +40,7 @@ DATATHON/
 │   └── modelo_match_xgboost.pkl  # Modelo XGBoost final
 │
 ├── notebooks/                   # Notebooks de exploração
-│   ├── Datathon.ipynb
+│   ├── Datathon.ipynb    #notebook que faz pré processamnento / feature engineering / treinamento /validação
 │   └── 01_exploracao_dados.ipynb
 │
 ├── utils/                       # Scripts auxiliares

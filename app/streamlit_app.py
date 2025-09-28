@@ -88,11 +88,11 @@ def _read_csv_local_or_url(local_path: str, url_env: str | None) -> pd.DataFrame
     
     # Parâmetros de leitura robustos para CSVs problemáticos
     READ_CSV_PARAMS = {
-        'sep': None,              # Auto-detect
+        'sep': ',',             # ❗ MUDAR DE None PARA ','
         'encoding': 'utf-8', 
         'on_bad_lines': 'skip',
         'engine': 'python',
-        'quoting': 3,            # QUOTE_NONE
+        'quoting': 0,           # ❗ MUDAR DE 3 (QUOTE_NONE) PARA 0 (QUOTE_MINIMAL)
         'skipinitialspace': True
     }
 
@@ -410,19 +410,27 @@ if "cache_loaded" not in st.session_state:
             # Tenta carregar ou construir os embeddings das vagas
             vaga_embs_cache = get_or_build_embeddings(st.session_state["vagas_df"], "vaga_text", MODEL_DIR)
             
-            # Se ambos foram carregados/construídos com sucesso
+            # Se ambos foram carregados/construídos com sucesso (bloco 'if' do seu código original)
             if cand_embs_cache is not None and vaga_embs_cache is not None:
                 st.session_state["cache_loaded"] = True
                 st.session_state["cand_embs_cache"] = cand_embs_cache
                 st.session_state["vaga_embs_cache"] = vaga_embs_cache
             else:
                 st.error("Não foi possível obter os embeddings para as bases fixas.")
+                st.session_state["cache_loaded"] = False # Garante que a flag esteja correta
+                st.session_state["cand_embs_cache"] = None
+                st.session_state["vaga_embs_cache"] = None
 
         except Exception as e:
-            st.error(f"Não foi possível carregar ou gerar os embeddings iniciais: {e}")
+            # Captura a falha de memória ou qualquer outra exceção grave
+            st.error(f"❌ Falha crítica ao carregar/gerar embeddings. Aplicativo interrompido. Erro: {e}")
+            
             st.session_state["cache_loaded"] = False
             st.session_state["cand_embs_cache"] = None
             st.session_state["vaga_embs_cache"] = None
+            
+            # 🛑 PARADA CRÍTICA: Impede que o Streamlit continue a execução sem os dados essenciais (Embeddings)
+            st.stop()
 
 # ======================== SIDEBAR E UI PRINCIPAL ========================
 
@@ -467,7 +475,8 @@ with tab_ranking:
     
     def _vaga_label(row: pd.Series) -> str:
         """Formata o rótulo da vaga para o selectbox."""
-        title = row.get("titulo") or ""
+        # ❗ MUDAR DE "titulo" PARA "titulo_vaga"
+        title = row.get("titulo_vaga") or "" 
         vt = str(row.get("vaga_text", ""))
         base_txt = title.strip() or (vt[:80] + ("…" if len(vt) > 80 else ""))
         return f"({row.name}) {base_txt}"

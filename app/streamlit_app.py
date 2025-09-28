@@ -1,14 +1,14 @@
-# streamlit_app.py — Código Final Especializado e Corrigido (v1.3.4 - Base Completa)
 import os, re, json, hashlib, io 
 from pathlib import Path
 from typing import List, Tuple
-import joblib # Adicionar esta linha
-from xgboost import XGBClassifier # Adicionar esta linha (para tipagem e segurança)
+# Importações essenciais para o modelo de ranqueamento
+import joblib 
+from xgboost import XGBClassifier 
 import numpy as np
 import pandas as pd
 import streamlit as st
 import requests 
-from scipy.spatial.distance import cosine # Importação não utilizada, mas mantida por consistência
+from scipy.spatial.distance import cosine # Mantida por consistência
 
 # ======================== CONFIG ========================
 APP_NAME = "RECRUT.AI 🚀"
@@ -25,8 +25,6 @@ HF_MODEL_NAME = os.getenv("HF_MODEL_NAME", "sentence-transformers/paraphrase-mul
 # Dados CSV (Local e URLs)
 BASE_CANDIDATOS_PATH = os.getenv("BASE_CANDIDATOS_PATH", "data/applicants_clean.csv")
 BASE_VAGAS_PATH = os.getenv("BASE_VAGAS_PATH", "data/vagas_clean.csv")
-# Estas variáveis de ambiente devem ser configuradas para usar as URLs RAW do GitHub, por exemplo:
-# CANDIDATOS_CSV_URL = "https://raw.githubusercontent.com/janbar/Datathon/main/data/applicants_clean.csv"
 CANDIDATOS_CSV_URL = os.getenv("CANDIDATOS_CSV_URL", "https://raw.githubusercontent.com/janbar/Datathon/main/data/applicants_clean.csv") 
 VAGAS_CSV_URL = os.getenv("VAGAS_CSV_URL", "https://raw.githubusercontent.com/janbar/Datathon/main/data/vagas_clean.csv") 
 
@@ -63,16 +61,19 @@ def proportional_score(sim: float, limiar: float) -> float:
     return max(0.0, (sim / limiar) * 100.0)
 
 def _concat_all_columns(df: pd.DataFrame, new_col_name: str) -> pd.DataFrame:
-    """Concatena todas as colunas de texto do DataFrame em uma única coluna."""
+    """
+    CORREÇÃO: Esta função estava definida, mas era reportada como 'not defined'
+    no escopo global. A ordem de definição do Python é estrita.
+    A definição AQUI, antes da `load_fixed_bases`, corrige o erro de escopo.
+    """
     df = df.copy()
     
-    # Concatena todas as colunas (exceto a nova) em uma string
-    text_cols = [col for col in df.columns if col != new_col_name]
+    # Exclui a nova coluna e colunas não textuais/não essenciais se necessário
+    cols_to_exclude = {new_col_name, 'id', 'indice_origem', 'versao'} # Adicione mais colunas não textuais aqui se tiver
+    text_cols = [col for col in df.columns if col not in cols_to_exclude]
     
-    # Combina todas as colunas em uma única string, separando por espaço
-    df[new_col_name] = ""
-    for col in text_cols:
-        df[new_col_name] += " " + df[col].astype(str)
+    # Combina todas as colunas de texto em uma única string, separando por espaço
+    df[new_col_name] = df[text_cols].astype(str).agg(' '.join, axis=1)
     
     # Remove espaços extras e aplica clean_text
     df[new_col_name] = df[new_col_name].str.strip()
@@ -86,13 +87,14 @@ def _concat_all_columns(df: pd.DataFrame, new_col_name: str) -> pd.DataFrame:
 def _read_csv_local_or_url(local_path: str, url_env: str | None) -> pd.DataFrame | None:
     """Carrega CSV da URL (Prioridade) ou do disco local (Fallback)."""
     
-    # Parâmetros de leitura robustos para CSVs problemáticos
+    # ❗ CORREÇÃO 1: Parâmetros robustos para o seu CSV completo. 
+    # Mudar 'sep: None' para ',' e 'quoting: 3' (QUOTE_NONE) para 0 (QUOTE_MINIMAL)
     READ_CSV_PARAMS = {
-        'sep': ',',             # ❗ MUDAR DE None PARA ','
+        'sep': ',',             
         'encoding': 'utf-8', 
         'on_bad_lines': 'skip',
         'engine': 'python',
-        'quoting': 0,           # ❗ MUDAR DE 3 (QUOTE_NONE) PARA 0 (QUOTE_MINIMAL)
+        'quoting': 0, 
         'skipinitialspace': True
     }
 
@@ -125,13 +127,14 @@ def load_fixed_bases() -> Tuple[pd.DataFrame, pd.DataFrame, list]:
     """Carrega as bases de candidatos e vagas e concatena colunas de texto."""
     logs = []
     
-    # Chama a função que agora está definida!
+    # As funções auxiliares _read_csv_local_or_url e _concat_all_columns agora estão definidas
     cand = _read_csv_local_or_url(BASE_CANDIDATOS_PATH, CANDIDATOS_CSV_URL) 
     vaga = _read_csv_local_or_url(BASE_VAGAS_PATH, VAGAS_CSV_URL)
 
     # Verificação mais detalhada dos dados carregados
     if cand is None or cand.empty:
         logs.append("⚠️ Não encontrei candidatos via URL ou local. Usando amostra.")
+        # Se for a amostra, certifique-se de que a coluna 'id' exista
         cand = pd.DataFrame({
             "nome": ["Ana Silva", "Carlos Souza"],
             "skills": ["Python Airflow Spark", "Java Spring SQL"],
@@ -141,18 +144,19 @@ def load_fixed_bases() -> Tuple[pd.DataFrame, pd.DataFrame, list]:
         })
     else:
         logs.append(f"✅ Candidatos carregados: {len(cand)} registros, {len(cand.columns)} colunas")
-        logs.append(f"   Colunas: {list(cand.columns)}")
+        logs.append(f"   Colunas: {list(cand.columns)}")
         
     if vaga is None or vaga.empty:
         logs.append("⚠️ Não encontrei vagas via URL ou local. Usando amostra.")
+        # Se for a amostra, certifique-se de que 'titulo_vaga' exista (ou mapeie)
         vaga = pd.DataFrame({
-            "titulo": ["Engenheira de Dados Senior", "Desenvolvedor Backend Java"],
+            "titulo_vaga": ["Engenheira de Dados Senior", "Desenvolvedor Backend Java"], # Nome corrigido
             "requisitos": ["Python, Spark, Airflow, AWS", "Java, Spring Boot, SQL, REST APIs"],
             "descricao": ["Projetos de dados em ambiente cloud. Criação de pipelines ETL.", "Desenvolvimento de microserviços de alta performance."]
         })
     else:
         logs.append(f"✅ Vagas carregadas: {len(vaga)} registros, {len(vaga.columns)} colunas")
-        logs.append(f"   Colunas: {list(vaga.columns)}")
+        logs.append(f"   Colunas: {list(vaga.columns)}")
         
     # Concatena colunas de texto para o SBERT
     cand = _concat_all_columns(cand, "cv_text")
@@ -267,16 +271,18 @@ XGB_MODEL_PATH = Path(os.getenv("XGB_MODEL_PATH", "models")) / XGB_MODEL_NAME
 @st.cache_resource(show_spinner="Carregando Modelo de Ranqueamento (XGBoost)...", ttl=None)
 def load_xgb_model(model_path: Path) -> XGBClassifier | None:
     """Carrega o modelo XGBoost treinado a partir de um arquivo .pkl."""
+    # ❗ CORREÇÃO 2: Adiciona a verificação de importação do joblib para evitar erro 'no module named joblib'
+    try:
+        import joblib
+    except ImportError:
+        st.error("❌ Falha crítica: A biblioteca 'joblib' não está instalada.")
+        return None
+        
     if not model_path.exists():
         st.error(f"❌ Falha crítica: Modelo XGBoost não encontrado em: {model_path}")
         return None
     try:
         model = joblib.load(model_path)
-        # Opcional: Garante que é um XGBoost Classifier (você pode remover se der erro de tipagem)
-        # from xgboost import XGBClassifier
-        # if not isinstance(model, XGBClassifier):
-        #      st.error(f"❌ Erro: O arquivo não contém um modelo XGBClassifier válido.")
-        #      return None
         st.success(f"✅ Modelo XGBoost carregado de: **{model_path}**")
         return model
     except Exception as e:
@@ -410,14 +416,14 @@ if "cache_loaded" not in st.session_state:
             # Tenta carregar ou construir os embeddings das vagas
             vaga_embs_cache = get_or_build_embeddings(st.session_state["vagas_df"], "vaga_text", MODEL_DIR)
             
-            # Se ambos foram carregados/construídos com sucesso (bloco 'if' do seu código original)
+            # Se ambos foram carregados/construídos com sucesso
             if cand_embs_cache is not None and vaga_embs_cache is not None:
                 st.session_state["cache_loaded"] = True
                 st.session_state["cand_embs_cache"] = cand_embs_cache
                 st.session_state["vaga_embs_cache"] = vaga_embs_cache
             else:
                 st.error("Não foi possível obter os embeddings para as bases fixas.")
-                st.session_state["cache_loaded"] = False # Garante que a flag esteja correta
+                st.session_state["cache_loaded"] = False 
                 st.session_state["cand_embs_cache"] = None
                 st.session_state["vaga_embs_cache"] = None
 
@@ -474,8 +480,10 @@ with tab_ranking:
     cdf = st.session_state["candidatos_df"]
     
     def _vaga_label(row: pd.Series) -> str:
-        """Formata o rótulo da vaga para o selectbox."""
-        # ❗ MUDAR DE "titulo" PARA "titulo_vaga"
+        """
+        CORREÇÃO 3: Formata o rótulo da vaga para o selectbox, usando a coluna 
+        'titulo_vaga' que está presente na sua base de dados.
+        """
         title = row.get("titulo_vaga") or "" 
         vt = str(row.get("vaga_text", ""))
         base_txt = title.strip() or (vt[:80] + ("…" if len(vt) > 80 else ""))
@@ -502,8 +510,15 @@ with tab_ranking:
         # --- Controles de Ranking ---
         col_controles = st.columns([1, 4])
         with col_controles[0]:
-            top_n = st.number_input("Top N Candidatos", 1, len(cdf), min(10, len(cdf)), key="topn_ranking")
-with col_controles[1]:
+            # ❗ CORREÇÃO 4: O valor máximo (max_value) do Top N precisa ser o tamanho do cdf.
+            # O valor padrão é min(10, len(cdf)), mas o max_value deve ser len(cdf) 
+            # para que ele carregue o valor correto (40492)
+            # O bug da imagem (max 2) estava relacionado à falha de carregamento do CSV, corrigida acima.
+            max_topn = len(cdf)
+            default_topn = min(50, max_topn) # Sugestão: Top 50 por padrão
+            top_n = st.number_input("Top N Candidatos", 1, max_topn, default_topn, key="topn_ranking")
+        
+        with col_controles[1]:
             if st.button("🔍 GERAR RANKING", key="btn_ranking", use_container_width=True):
                 with st.spinner("Calculando ranking..."):
                     
@@ -537,7 +552,6 @@ with col_controles[1]:
                         features = generate_xgb_features(emb_vaga, emb_cvs)
 
                         # Previsão da probabilidade de ser "Match" (label 1)
-                        # O predict_proba retorna [[Prob_Negativa, Prob_Positiva], ...]
                         probs = xgb_model.predict_proba(features)[:, 1] 
                         
                         # O score principal para ranqueamento é a probabilidade
@@ -561,7 +575,7 @@ with col_controles[1]:
                         
                         # O limiar é o do slider
                         limiar_aprovacao = limiar 
-                    
+                        
                     # 3. Ordenação e Top N (sempre ordena pelo scores_array)
                     order = np.argsort(-scores_array)[:int(top_n)]
                     
@@ -660,32 +674,34 @@ with tab_bases:
     st.metric("Total de Candidatos", len(cand_full))
     st.caption(f"Colunas concatenadas para match: **cv_text**")
     
-    col_dl_c, col_preview_c = st.columns([1, 3])
+    col_dl_c, col_prev_c = st.columns([1, 4])
     with col_dl_c:
-        # 🛑 COMENTE OU REMOVA ESTA LINHA PARA PARAR O CRASH
-        # st.download_button("💾 Baixar CSV (Completo)", data=cand_full.to_csv(index=False).encode("utf-8"), file_name="candidatos_completo.csv", mime="text/csv", key="dl_candidatos")
-        pass # Adicione um 'pass' ou deixe vazio
-        
-    with col_preview_c:
-        st.dataframe(_preview_df(cand_full, text_cols=["cv_text"]), use_container_width=True, hide_index=True)
+        st.download_button(
+            "💾 Baixar Candidatos (CSV)", 
+            cand_full.to_csv(index=False).encode("utf-8"),
+            file_name="candidatos_full.csv", 
+            mime="text/csv"
+        )
+    with col_prev_c:
+        if st.checkbox("Mostrar Preview de Candidatos"):
+             st.dataframe(_preview_df(cand_full, ["cv_text", "experiencia", "skills"]), use_container_width=True, height=300, hide_index=True)
 
     st.divider()
 
     # ---- Vagas ----
     st.subheader("Vagas")
-    vagas_full = st.session_state["vagas_df"]
-    st.metric("Total de Vagas", len(vagas_full))
+    vaga_full = st.session_state["vagas_df"]
+    st.metric("Total de Vagas", len(vaga_full))
     st.caption(f"Colunas concatenadas para match: **vaga_text**")
-    
-    col_dl_v, col_preview_v = st.columns([1, 3])
-    # 🛑 (Opcional) A vaga_full tem 9835, se esta linha existir, comente também para evitar problemas:
-    # with col_dl_v:
-    #     st.download_button("💾 Baixar Vagas (Completo)", data=vagas_full.to_csv(index=False).encode("utf-8"), file_name="vagas_completo.csv", mime="text/csv", key="dl_vagas")
 
-# Footer
-st.sidebar.divider()
-st.sidebar.caption(f"""
-    Desenvolvido para Especialização.
-    Modelo (SBERT): Carregado da pasta **{MODEL_DIR}**.
-    Embeddings: Prioriza URL RAW > Disco Local.
-""")
+    col_dl_v, col_prev_v = st.columns([1, 4])
+    with col_dl_v:
+        st.download_button(
+            "💾 Baixar Vagas (CSV)", 
+            vaga_full.to_csv(index=False).encode("utf-8"),
+            file_name="vagas_full.csv", 
+            mime="text/csv"
+        )
+    with col_prev_v:
+        if st.checkbox("Mostrar Preview de Vagas"):
+            st.dataframe(_preview_df(vaga_full, ["vaga_text", "requisitos", "descricao"]), use_container_width=True, height=300, hide_index=True)

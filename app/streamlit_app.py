@@ -658,6 +658,10 @@ with tab_ranking:
 with tab_bases:
     st.header("Visualização das Bases de Dados Carregadas")
 
+    # Garante que, mesmo que a chave falhe, teremos um DataFrame vazio para usar
+    cand_full = st.session_state.get("candidatos_df", pd.DataFrame()) 
+    vaga_full = st.session_state.get("vagas_df", pd.DataFrame())
+
     def _preview_df(df: pd.DataFrame, text_cols: list[str], max_chars: int = 300) -> pd.DataFrame:
         """Prepara um dataframe para visualização, truncando colunas de texto longas."""
         df = df.copy()
@@ -665,26 +669,28 @@ with tab_bases:
         dfv = df[view_cols].copy()
         for c in dfv.columns:
             if c in text_cols and dfv[c].dtype == object:
+                # Esta é a lógica final e robusta para truncar strings:
                 dfv[c] = dfv[c].str.slice(0, max_chars) + (dfv[c].apply(lambda x: '...' if isinstance(x, str) and len(x) > max_chars else ''))
         return dfv
 
     # ---- Candidatos ----
     st.subheader("Candidatos")
-    cand_full = st.session_state["candidatos_df"]
-    st.metric("Total de Candidatos", len(cand_full))
+    st.metric("Total de Candidatos", len(cand_full)) # OK porque len(DataFrame vazio) = 0
     st.caption(f"Colunas concatenadas para match: **cv_text**")
     
     col_dl_c, col_prev_c = st.columns([1, 4])
     with col_dl_c:
-        st.download_button(
-            "💾 Baixar Candidatos (CSV)", 
-            cand_full.to_csv(index=False).encode("utf-8"),
-            file_name="candidatos_full.csv", 
-            mime="text/csv"
-        )
-    with col_prev_c:
-        if st.checkbox("Mostrar Preview de Candidatos"):
-             st.dataframe(_preview_df(cand_full, ["cv_text", "experiencia", "skills"]), use_container_width=True, height=300, hide_index=True)
+        # Adiciona verificação .empty para desativar o download se o DataFrame estiver vazio
+        if not cand_full.empty:
+            st.download_button(
+                "💾 Baixar Candidatos (CSV)", 
+                # Esta linha 681 agora é segura
+                cand_full.to_csv(index=False).encode("utf-8"),
+                file_name="candidatos_full.csv", 
+                mime="text/csv"
+            )
+        else:
+            st.caption("Base de candidatos vazia ou não carregada.")
 
     st.divider()
 

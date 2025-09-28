@@ -1,3 +1,13 @@
 [server]
-# aumenta o limite padrão de 200 MB para 500 MB
-maxMessageSize = 500
+maxUploadSize = 400
+
+# Otimizações de performance
+[scheduler]
+maxMessageSize = 400
+
+# Cache mais agressivo
+[runner]
+magicEnabled = false
+
+[global]
+developmentMode = false

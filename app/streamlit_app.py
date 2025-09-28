@@ -653,7 +653,10 @@ with tab_bases:
     
     col_dl_c, col_preview_c = st.columns([1, 3])
     with col_dl_c:
-        st.download_button("💾 Baixar CSV (Completo)", data=cand_full.to_csv(index=False).encode("utf-8"), file_name="candidatos_completo.csv", mime="text/csv", key="dl_candidatos")
+        # 🛑 COMENTE OU REMOVA ESTA LINHA PARA PARAR O CRASH
+        # st.download_button("💾 Baixar CSV (Completo)", data=cand_full.to_csv(index=False).encode("utf-8"), file_name="candidatos_completo.csv", mime="text/csv", key="dl_candidatos")
+        pass # Adicione um 'pass' ou deixe vazio
+        
     with col_preview_c:
         st.dataframe(_preview_df(cand_full, text_cols=["cv_text"]), use_container_width=True, hide_index=True)
 
@@ -666,10 +669,9 @@ with tab_bases:
     st.caption(f"Colunas concatenadas para match: **vaga_text**")
     
     col_dl_v, col_preview_v = st.columns([1, 3])
-    with col_dl_v:
-        st.download_button("💾 Baixar CSV (Completo)", data=vagas_full.to_csv(index=False).encode("utf-8"), file_name="vagas_completo.csv", mime="text/csv", key="dl_vagas")
-    with col_preview_v:
-        st.dataframe(_preview_df(vagas_full, text_cols=["vaga_text"]), use_container_width=True, hide_index=True)
+    # 🛑 (Opcional) A vaga_full tem 9835, se esta linha existir, comente também para evitar problemas:
+    # with col_dl_v:
+    #     st.download_button("💾 Baixar Vagas (Completo)", data=vagas_full.to_csv(index=False).encode("utf-8"), file_name="vagas_completo.csv", mime="text/csv", key="dl_vagas")
 
 # Footer
 st.sidebar.divider()

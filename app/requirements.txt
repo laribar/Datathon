@@ -6,3 +6,7 @@ sentence-transformers
 joblib
 scikit-learn
 xgboost
+
+streamlit==1.38.0
+requests==2.32.3
+pandas==2.2.2

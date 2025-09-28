@@ -1,16 +1,11 @@
 services:
   - type: web
-    name: neohr-ml-service
-    runtime: python
-    buildCommand: pip install -r api/requirements.txt
-    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT --workers 2
-    rootDir: .
-    envVars:
-      - key: PORT
-        value: "10000"
-      - key: ALLOWED_ORIGINS
-        value: https://interview-nexus-go.lovable.app,https://*.lovable.app
-      - key: API_KEY
-        sync: false
-    plan: free
+    name: matchapi
+    env: docker
+    plan: starter
     autoDeploy: true
+    envVars:
+      - key: SCORE_LIMIAR
+        value: "0.75"
+      - key: MODEL_NAME
+        value: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"

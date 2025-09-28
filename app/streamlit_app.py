@@ -1,4 +1,4 @@
-# streamlit_app.py — Streamlit otimizado (SBERT)
+# streamlit_app.py — Código Final para Especialização (Modelo Local)
 import os, re, json, hashlib
 from pathlib import Path
 from typing import List, Tuple
@@ -6,32 +6,36 @@ from typing import List, Tuple
 import numpy as np
 import pandas as pd
 import streamlit as st
+import requests # Para ler URLs de dados
 
 # ======================== CONFIG ========================
-APP_NAME = "SkillAI Match 🚀"
-APP_VERSION = "1.1.0"
+APP_NAME = "RECRUT.AI 🚀"
+APP_VERSION = "1.3.0 (Especialização)"
 
 DEFAULT_LIMIAR = float(os.getenv("SCORE_LIMIAR", "0.75"))
 
-# Modelo: DEVE ESTAR PRÉ-BAIXADO (para deploy rápido)
+# 📌 ALTERAÇÃO CRÍTICA: Definimos o modelo como a pasta local DO SEU PROJETO
+# O SentenceTransformer irá carregar o modelo salvo DENTRO desta pasta.
+# Certifique-se de que a pasta 'models/sbert_encoder' exista no seu repositório.
 MODEL_DIR = os.getenv("MODEL_DIR", "models/sbert_encoder")
-HF_MODEL_NAME = os.getenv("HF_MODEL_NAME", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
-MODEL_NAME = os.getenv("MODEL_NAME", f"local:{MODEL_DIR}")
+MODEL_NAME = os.getenv("MODEL_NAME", f"Local_Custom:{MODEL_DIR}") 
+# Usamos um fallback, mas a prioridade é o modelo local
+HF_MODEL_NAME = os.getenv("HF_MODEL_NAME", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2") 
 
-# Dados: local ou URLs
+# Dados: URLs RAW do GitHub têm prioridade (melhor para o Streamlit Cloud)
 BASE_CANDIDATOS_PATH = os.getenv("BASE_CANDIDATOS_PATH", "data/applicants_clean.csv")
 BASE_VAGAS_PATH = os.getenv("BASE_VAGAS_PATH", "data/vagas_clean.csv")
-CANDIDATOS_CSV_URL = os.getenv("CANDIDATOS_CSV_URL")
-VAGAS_CSV_URL = os.getenv("VAGAS_CSV_URL")
+CANDIDATOS_CSV_URL = os.getenv("CANDIDATOS_CSV_URL") 
+VAGAS_CSV_URL = os.getenv("VAGAS_CSV_URL") 
 
-# Cache de embeddings
+# Cache de embeddings (mantido, mas opcional/efêmero no Cloud)
 EMB_DIR = Path(os.getenv("EMB_DIR", "data/embeddings")); EMB_DIR.mkdir(parents=True, exist_ok=True)
 CAND_EMB_PATH = EMB_DIR / "candidatos.npy"
 CAND_META_PATH = EMB_DIR / "candidatos.meta.json"
 VAGA_EMB_PATH = EMB_DIR / "vagas.npy"
 VAGA_META_PATH = EMB_DIR / "vagas.meta.json"
 
-# ======================== TEXT UTILS ========================
+# ======================== TEXT UTILS (Sem Alteração) ========================
 _whitespace_re = re.compile(r"\s+")
 _SENT_SPLIT_RE = re.compile(r"(?<=[\.!?;:]|\n)\s+")
 
@@ -41,7 +45,6 @@ def clean_text(t: str) -> str:
     return _whitespace_re.sub(" ", t)
 
 def proportional_score(sim: float, limiar: float) -> float:
-    # 0.75 -> 100.0 se for >= 0.75; senão é a proporção (sim/limiar)*100
     return 100.0 if sim >= limiar else max(0.0, (sim/limiar)*100.0)
 
 def split_sentences(text: str, min_chars: int = 25) -> List[str]:
@@ -52,36 +55,29 @@ def split_sentences(text: str, min_chars: int = 25) -> List[str]:
     return parts if parts else [t]
 
 def top_n_pairs_by_cosine_optimized(A: List[str], B: List[str], encoder, top_n: int = 3):
-    """Versão otimizada que evita product cartesiano explícito"""
     if not A or not B: return []
-    
-    # Encoda tudo de uma vez
     A_vecs = encoder.encode(A, normalize_embeddings=True, show_progress_bar=False, convert_to_numpy=True)
     B_vecs = encoder.encode(B, normalize_embeddings=True, show_progress_bar=False, convert_to_numpy=True)
-    
-    # Calcula similaridade em lote (mais eficiente)
     similarity_matrix = A_vecs @ B_vecs.T
-    
-    # Encontra os top_n pares de forma eficiente
-    # Usa np.partition para maior velocidade
     flat_indices = np.argpartition(similarity_matrix.flatten(), -top_n)[-top_n:]
     pairs_indices = np.unravel_index(flat_indices, similarity_matrix.shape)
-    
     pairs = []
     for i, j in zip(*pairs_indices):
         pairs.append((int(i), int(j), float(similarity_matrix[i, j])))
-    
-    # Ordena por similaridade
     pairs.sort(key=lambda x: x[2], reverse=True)
     return pairs
 
-# ======================== EMB UTILS ========================
+# ======================== EMB UTILS (Pequenas Alterações no Log) ========================
 def _hash_dataframe(df: pd.DataFrame) -> str:
     buf = df.to_csv(index=False).encode("utf-8")
     return hashlib.md5(buf).hexdigest()
 
 def _save_embeddings(npy_path: Path, meta_path: Path, embs: np.ndarray, meta: dict) -> None:
-    np.save(npy_path, embs); meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        np.save(npy_path, embs)
+        meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass # Falha silenciosamente se o disco for efêmero
 
 def _load_embeddings(npy_path: Path, meta_path: Path) -> Tuple[np.ndarray | None, dict]:
     if not npy_path.exists() or not meta_path.exists():
@@ -93,92 +89,98 @@ def _load_embeddings(npy_path: Path, meta_path: Path) -> Tuple[np.ndarray | None
         return None, {}
 
 def get_or_build_embeddings(df: pd.DataFrame, text_col: str, npy_path: Path, meta_path: Path, model_dir: str) -> np.ndarray:
-    """Tenta carregar do cache ou constrói e salva os embeddings."""
+    """Tenta carregar do cache local ou constrói e salva os embeddings."""
     sig = _hash_dataframe(df[[text_col]])
-    meta_expected = {"model_dir": model_dir, "text_col": text_col, "signature": sig, "version": APP_VERSION}
+    # Usamos MODEL_DIR como assinatura
+    meta_expected = {"model_source": model_dir, "text_col": text_col, "signature": sig, "version": APP_VERSION}
     
-    # Tenta carregar do cache
+    # 1. Tenta carregar do cache local
     embs, meta = _load_embeddings(npy_path, meta_path)
     if embs is not None and meta == meta_expected and embs.ndim == 2 and embs.shape[0] == len(df):
-        st.info(f"💾 Cache de embeddings para '{text_col}' carregado.")
+        st.info(f"💾 Cache de embeddings para '{text_col}' carregado do disco.")
         return embs
         
-    # Se falhar ou não existir, constrói
-    st.warning(f"⏳ Reconstruindo embeddings para '{text_col}'. Isso pode levar alguns minutos...")
+    # 2. Se falhar ou não existir, constrói (lento)
+    st.warning(f"⏳ Reconstruindo embeddings para '{text_col}' (Não há cache válido).")
     texts = df[text_col].astype(str).tolist()
-    embs = embed_texts(texts, model_dir)
+    embs = embed_texts(texts, model_dir) 
     _save_embeddings(npy_path, meta_path, embs, meta_expected)
-    st.success(f"✅ Embeddings gerados e salvos em {npy_path.name}")
+    st.success(f"✅ Embeddings gerados. Salvo (se o disco não for efêmero).")
     return embs
 
-# ======================== MODEL / ENCODER ========================
-@st.cache_resource(show_spinner="Carregando modelo SBERT...", ttl=None)
-def load_model(model_dir: str):
-    # Importação lazy para evitar erro de importação em ambientes sem SBERT
+# ======================== MODEL / ENCODER (Foco no Local) ========================
+@st.cache_resource(show_spinner="Carregando Encoder (Priorizando Modelo Local)...", ttl=None)
+def load_model(model_path: str):
     from sentence_transformers import SentenceTransformer
     
-    # Prioriza o carregamento do disco para deploy rápido
+    # 📌 Prioriza o caminho local do projeto (seu modelo)
+    st.info(f"Fazendo load do modelo a partir do caminho: **{model_path}**")
     try:
-        model = SentenceTransformer(model_dir)
-        st.success(f"Modelo carregado do disco: {model_dir} (Pronto para alta performance)")
+        model = SentenceTransformer(model_path) 
+        st.success(f"✅ Modelo customizado carregado com sucesso de: **{model_path}**")
         return model
-    except (OSError, Exception) as e:
-        # Fallback de download (Aviso: torna o boot lento)
-        st.error(f"❌ Não foi possível carregar o modelo localmente ({model_dir}). Tentando baixar do Hugging Face. Erro: {e}")
-        model = SentenceTransformer(HF_MODEL_NAME)
-        # Tenta salvar para otimizar próximos boots
+    except Exception as e:
+        # Fallback para o Hub (caso o modelo não esteja na pasta esperada)
+        st.error(f"❌ Falha ao carregar modelo de: {model_path}. Tentando fallback: {HF_MODEL_NAME}. Erro: {e}")
         try:
-            os.makedirs(model_dir, exist_ok=True)
-            model.save(model_dir)
-            st.warning(f"Modelo baixado e salvo em {model_dir} para futuras inicializações.")
+            model = SentenceTransformer(HF_MODEL_NAME)
+            st.warning(f"⚠️ Modelo padrão do Hugging Face carregado como fallback.")
+            return model
         except Exception:
-            st.error("Falha ao salvar o modelo baixado no disco.")
-        return model
+            st.error("❌ Falha crítica: Não foi possível carregar o modelo de nenhuma fonte.")
+            st.stop()
+            
 
 @st.cache_data(show_spinner="Gerando embeddings em lote...", ttl=3600, max_entries=5)
-def embed_texts(texts: List[str], model_dir: str) -> np.ndarray:
-    model = load_model(model_dir)
+def embed_texts(texts: List[str], model_path: str) -> np.ndarray:
+    model = load_model(model_path)
     return model.encode(texts, normalize_embeddings=True, show_progress_bar=False, convert_to_numpy=True)
 
 @st.cache_data(show_spinner="Gerando embedding...", ttl=3600, max_entries=20)
-def embed_text(text: str, model_dir: str) -> np.ndarray:
-    model = load_model(model_dir)
-    # Retorna o vetor (dim=1)
+def embed_text(text: str, model_path: str) -> np.ndarray:
+    model = load_model(model_path)
     return model.encode(text, normalize_embeddings=True, show_progress_bar=False, convert_to_numpy=True)
 
-# ======================== DATA LOADERS ========================
+# ======================== DATA LOADERS (Prioridade na URL) ========================
 @st.cache_data(show_spinner=False)
 def _concat_all_columns(df: pd.DataFrame, target_col: str) -> pd.DataFrame:
     out = df.copy()
     if target_col in out.columns: out = out.drop(columns=[target_col])
-    # Coerção mais segura para string
     s = out.fillna("").astype(str)
-    # Concatena os valores de todas as colunas
     out[target_col] = s.apply(lambda row: " ".join([v for v in row.values if v != ""]).strip(), axis=1)
     return out
 
 @st.cache_data(show_spinner=False)
 def _read_csv_local_or_url(local_path: str, url_env: str | None) -> pd.DataFrame | None:
-    # 1. Tenta URL (se fornecida)
+    # 1. Tenta URL (Prioridade - Para deploy Cloud)
     if url_env:
-        try: return pd.read_csv(url_env)
-        except Exception: pass
-    # 2. Tenta caminho local
+        try:
+            r = requests.head(url_env, timeout=5)
+            if r.status_code == 200:
+                st.info(f"🔗 Dados lidos da URL: {url_env}")
+                return pd.read_csv(url_env)
+        except Exception: 
+            pass
+            
+    # 2. Tenta caminho local (Fallback - Para teste local)
     try:
-        if os.path.exists(local_path): return pd.read_csv(local_path)
-    except Exception: pass
+        if os.path.exists(local_path): 
+            st.info(f"📂 Dados lidos do disco local: {local_path}")
+            return pd.read_csv(local_path)
+    except Exception: 
+        pass
+        
     return None
 
 @st.cache_data(show_spinner="Carregando bases de dados...", ttl=None)
 def load_fixed_bases() -> Tuple[pd.DataFrame, pd.DataFrame, list]:
-    """Carrega dados iniciais do disco/URL ou usa amostras."""
     logs = []
     cand = _read_csv_local_or_url(BASE_CANDIDATOS_PATH, CANDIDATOS_CSV_URL)
     vaga = _read_csv_local_or_url(BASE_VAGAS_PATH, VAGAS_CSV_URL)
 
-    # Dados de Amostra (Fallback)
+    # Dados de Amostra (Fallback final)
     if cand is None or cand.empty:
-        logs.append("⚠️ Não encontrei candidatos locais/URL válidos. Usando amostra.")
+        logs.append("⚠️ Não encontrei candidatos via URL ou local. Usando amostra.")
         cand = pd.DataFrame({
             "nome": ["Ana Silva", "Carlos Souza", "Maria Oliveira", "Pedro Rocha"],
             "skills": ["Python Airflow Spark", "Java Spring SQL", "Python Pandas Matplotlib", "C++ Linux Multithreading"],
@@ -186,14 +188,13 @@ def load_fixed_bases() -> Tuple[pd.DataFrame, pd.DataFrame, list]:
             "cidade": ["São Paulo", "Rio de Janeiro", "Belo Horizonte", "Curitiba"]
         })
     if vaga is None or vaga.empty:
-        logs.append("⚠️ Não encontrei vagas locais/URL válidas. Usando amostra.")
+        logs.append("⚠️ Não encontrei vagas via URL ou local. Usando amostra.")
         vaga = pd.DataFrame({
             "titulo": ["Engenheira de Dados Senior", "Desenvolvedor Backend Java", "Analista de Dados Júnior"],
             "requisitos": ["Python, Spark, Airflow, AWS", "Java, Spring Boot, SQL, REST APIs", "Python, Pandas, Power BI, SQL"],
             "descricao": ["Projetos de dados em ambiente cloud. Criação de pipelines ETL.", "Desenvolvimento de microserviços de alta performance.", "Criação de relatórios e dashboards. Suporte a tomada de decisão."]
         })
 
-    # Concatena todas as colunas para o campo de texto usado nos embeddings
     cand = _concat_all_columns(cand, "cv_text")
     vaga = _concat_all_columns(vaga, "vaga_text")
     
@@ -210,18 +211,15 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 2. Carrega o modelo (e usa o cache global)
-# Isso deve ser feito antes de qualquer função de embedding
-with st.spinner("Preparando o Encoder (SBERT)..."):
+# 2. Carrega o modelo (Priorizando o MODEL_DIR)
+with st.spinner(f"Preparando o Encoder (Seu Modelo: {MODEL_DIR})..."):
     try:
-        # A chamada aqui garante que o modelo seja carregado na memória do Streamlit
         load_model(MODEL_DIR)
-    except Exception as e:
-        st.error(f"Erro fatal ao carregar o modelo. Verifique a pasta '{MODEL_DIR}'.")
+    except Exception:
         st.stop()
 
 
-# 3. Carrega Bases Fixas
+# 3. Carrega Bases Fixas (priorizando URL)
 candidatos_df, vagas_df, _logs = load_fixed_bases()
 
 # Guardar bases na session_state
@@ -230,27 +228,26 @@ if "candidatos_df" not in st.session_state:
 if "vagas_df" not in st.session_state:
     st.session_state["vagas_df"] = vagas_df.copy()
 
-# 4. Tenta carregar embeddings de base OU recalcula se o cache estiver vazio (para a Tab 5)
+# 4. Tenta carregar embeddings de base OU recalcula se o cache estiver vazio
 cand_embs_cache = None
 vaga_embs_cache = None
 cache_loaded = False
 if not CAND_EMB_PATH.exists() or not VAGA_EMB_PATH.exists():
     with st.spinner("⚡ Preparando embeddings iniciais (base)..."):
         try:
-            # Garante que os embeddings de base estejam em memória para o Ranking
+            # Usamos MODEL_DIR como source para o get_or_build_embeddings
             cand_embs_cache = get_or_build_embeddings(st.session_state["candidatos_df"], "cv_text", CAND_EMB_PATH, CAND_META_PATH, MODEL_DIR)
             vaga_embs_cache = get_or_build_embeddings(st.session_state["vagas_df"], "vaga_text", VAGA_EMB_PATH, VAGA_META_PATH, MODEL_DIR)
             cache_loaded = True
         except Exception:
-            st.warning("Não foi possível gerar os embeddings iniciais. O ranking pode ser lento.")
+            st.warning("Não foi possível gerar os embeddings iniciais.")
 else:
-    # Se existe no disco, apenas carrega a referência (para uso futuro)
     try:
         cand_embs_cache, _ = _load_embeddings(CAND_EMB_PATH, CAND_META_PATH)
         vaga_embs_cache, _ = _load_embeddings(VAGA_EMB_PATH, VAGA_META_PATH)
         cache_loaded = True
     except Exception:
-        pass # Ignora, a próxima geração irá corrigir
+        pass
 
 st.session_state["cache_loaded"] = cache_loaded
 st.session_state["cand_embs_cache"] = cand_embs_cache
@@ -271,12 +268,12 @@ with st.sidebar:
     st.markdown("#### 🛠️ Cache de Embeddings")
     st.info(f"Status do Cache: {'✅ Disponível' if cache_loaded else '❌ Indisponível'}")
 
-    if st.button("⚡ Gerar/Atualizar Cache de Base", help="Salva os embeddings das bases atuais no disco."):
-        with st.spinner("Gerando e salvando cache (candidatos e vagas)..."):
+    if st.button("⚡ Gerar/Atualizar Cache de Base", help="Salva os embeddings das bases atuais no disco (Se o armazenamento não for efêmero)."):
+        with st.spinner("Gerando e salvando cache (candidatos e vagas)…"):
             st.session_state["cand_embs_cache"] = get_or_build_embeddings(st.session_state["candidatos_df"], "cv_text", CAND_EMB_PATH, CAND_META_PATH, MODEL_DIR)
             st.session_state["vaga_embs_cache"] = get_or_build_embeddings(st.session_state["vagas_df"], "vaga_text", VAGA_EMB_PATH, VAGA_META_PATH, MODEL_DIR)
             st.session_state["cache_loaded"] = True
-            st.success(f"Cache salvo em {EMB_DIR}. Recarregue a página para usar o cache.")
+            st.success(f"Cache gerado. Recarregue a página para usar o cache.")
 
 
 # Exibe logs de carregamento de base
@@ -286,6 +283,7 @@ if _logs:
 
 
 st.title("🔎 Match CV × Vaga (SBERT) - Análise Semântica")
+st.markdown(f"**Modelo em Uso:** {MODEL_DIR}")
 st.markdown("Use as abas abaixo para realizar diferentes tipos de análise de similaridade.")
 
 # -------------------- TABS --------------------
@@ -312,7 +310,7 @@ with tab1:
                 cv_raw = clean_text(cv_text) if clean else cv_text
                 vaga_raw = clean_text(vaga_text) if clean else vaga_text
                 
-                # embed_text já retorna um np.ndarray 
+                # Usa o MODEL_DIR
                 cv_vec = embed_text(cv_raw, MODEL_DIR).flatten()
                 vaga_vec = embed_text(vaga_raw, MODEL_DIR).flatten()
                 
@@ -384,7 +382,6 @@ with tab2:
                 out_df = pd.DataFrame(rows)
                 st.success(f"🎉 Processado: {len(out_df)} matches no Top K.")
                 
-                # Exibição com formatação
                 st.dataframe(
                     out_df, 
                     use_container_width=True, 
@@ -482,7 +479,6 @@ with tab4:
     vdf = st.session_state["vagas_df"]
     cdf = st.session_state["candidatos_df"]
     
-    # Função utilitária para rótulos mais limpos
     def _vaga_label(row: pd.Series) -> str:
         title = row.get("titulo") or ""
         vt = str(row.get("vaga_text", ""))
@@ -506,20 +502,19 @@ with tab4:
 
         if st.button("🔍 Gerar Ranking", key="btn_ranking", use_container_width=True):
             with st.spinner("Calculando ranking..."):
-                # Lógica de embeddings otimizada (prioriza o cache carregado na sessão)
                 
                 # 1. Embedding da Vaga
                 if st.session_state["cache_loaded"] and not clean_rank:
                     emb_vaga = st.session_state["vaga_embs_cache"][idx]
                 elif clean_rank:
                     emb_vaga = embed_text(clean_text(vaga_text_sel), MODEL_DIR).flatten()
-                else: # Fallback lento
+                else: 
                     emb_vaga = embed_text(vaga_text_sel, MODEL_DIR).flatten()
 
                 # 2. Embeddings dos Candidatos
                 if st.session_state["cache_loaded"] and not clean_rank:
                     emb_cvs = st.session_state["cand_embs_cache"]
-                else: # Lento: recalcula tudo
+                else: 
                     cvs = cdf["cv_text"].astype(str).tolist()
                     if clean_rank: 
                         cvs = [clean_text(x) for x in cvs]
@@ -540,7 +535,6 @@ with tab4:
                         "Aprovado": bool(sim >= limiar),
                     }
                     
-                    # Adiciona colunas identificadoras (Nome, ID, etc.)
                     for col in ["nome", "id", "titulo"]:
                         if col in cdf.columns: 
                             row[col] = cdf.iloc[i][col]
@@ -551,7 +545,6 @@ with tab4:
                 
                 st.success(f"🎉 Ranking gerado: Top {len(res)} candidatos.")
 
-                # Exibição com formatação
                 st.dataframe(
                     res, 
                     use_container_width=True, 
@@ -563,7 +556,6 @@ with tab4:
                     }
                 )
                 
-                # Métricas resumo
                 aprovados = res["Aprovado"].sum()
                 col1, col2, col3 = st.columns(3)
                 with col1: st.metric("Candidatos Aprovados", aprovados)
@@ -586,15 +578,12 @@ with tab5:
     st.subheader("Bases de Dados Carregadas em Memória")
 
     def _preview_df(df: pd.DataFrame, text_cols: list[str], max_chars: int = 400, max_cols: int = 20) -> pd.DataFrame:
-        """Coerção segura + truncagem p/ preview no Streamlit."""
         df = df.copy()
         
-        # Limita o número de colunas para exibição
         view_cols = [c for c in df.columns if c not in text_cols] + text_cols
         view_cols = view_cols[:max_cols] if view_cols else df.columns[:max_cols]
         dfv = df[view_cols].copy()
 
-        # Trunca textos longos
         for c in dfv.columns:
             if c in text_cols and dfv[c].dtype == object:
                 dfv[c] = dfv[c].str.slice(0, max_chars) + (dfv[c].apply(lambda x: '...' if isinstance(x, str) and len(x) > max_chars else ''))
@@ -640,4 +629,8 @@ with tab5:
 
 # Footer
 st.sidebar.divider()
-st.sidebar.caption("Desenvolvido para otimização de deploy e performance (SBERT + Streamlit Caching).")
+st.sidebar.caption(f"""
+    Desenvolvido para Especialização.
+    **Modelo (SBERT):** Carregado da pasta **{MODEL_DIR}** no seu repositório.
+    **Dados (CSV):** Prioriza URL (Variáveis de Ambiente) > Disco Local > Amostra.
+""")

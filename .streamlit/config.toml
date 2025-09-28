@@ -1,13 +1,15 @@
 [server]
-maxUploadSize = 400
+maxUploadSize = 400 # Max file size for uploads in MB
+
+---
 
 # Otimizações de performance
-[scheduler]
-maxMessageSize = 400
+# [scheduler] maxMessageSize has been removed and must be deleted.
 
 # Cache mais agressivo
 [runner]
-magicEnabled = false
+magicEnabled = false # Disables the automatic rerun when a variable changes.
 
 [global]
-developmentMode = false
+developmentMode = false # Ensures max performance (Disables various checks).
+

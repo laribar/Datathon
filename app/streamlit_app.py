@@ -1,130 +1,168 @@
-# streamlit_app.py — Código Final para Especialização (Modelo Local)
-import os, re, json, hashlib, io # <-- ADICIONADO 'io' para leitura binária de URLs
+# streamlit_app.py — Código Final Especializado e Corrigido
+import os, re, json, hashlib, io 
 from pathlib import Path
-from typing import List, Tuple, Tuple
+from typing import List, Tuple
 
 import numpy as np
 import pandas as pd
 import streamlit as st
-import requests # Para ler URLs de dados
+import requests 
+from scipy.spatial.distance import cosine
 
 # ======================== CONFIG ========================
 APP_NAME = "RECRUT.AI 🚀"
-APP_VERSION = "1.3.0 (Especialização)"
+APP_VERSION = "1.3.2 (Finalizada)" 
 
+# Limiar padrão para "Aprovação" no ranking
 DEFAULT_LIMIAR = float(os.getenv("SCORE_LIMIAR", "0.75"))
 
-# 📌 ALTERAÇÃO CRÍTICA: Definimos o modelo como a pasta local DO SEU PROJETO
-# O SentenceTransformer irá carregar o modelo salvo DENTRO desta pasta.
-# Certifique-se de que a pasta 'models/sbert_encoder' exista no seu repositório.
+# Modelo: Pasta local do seu projeto (O seu sbert_encoder)
 MODEL_DIR = os.getenv("MODEL_DIR", "models/sbert_encoder")
 MODEL_NAME = os.getenv("MODEL_NAME", f"Local_Custom:{MODEL_DIR}") 
-# Usamos um fallback, mas a prioridade é o modelo local
 HF_MODEL_NAME = os.getenv("HF_MODEL_NAME", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2") 
 
-# Dados: URLs RAW do GitHub têm prioridade (melhor para o Streamlit Cloud)
+# Dados CSV (Local e URLs)
 BASE_CANDIDATOS_PATH = os.getenv("BASE_CANDIDATOS_PATH", "data/applicants_clean.csv")
 BASE_VAGAS_PATH = os.getenv("BASE_VAGAS_PATH", "data/vagas_clean.csv")
 CANDIDATOS_CSV_URL = os.getenv("CANDIDATOS_CSV_URL") 
 VAGAS_CSV_URL = os.getenv("VAGAS_CSV_URL") 
 
-# Cache de embeddings (pode ser lido do GitHub ou gerado localmente)
+# Cache de embeddings: Remoto (URLs RAW do GitHub - PRIORIDADE MÁXIMA)
+# ASsegure-se que estas URLs apontam para a versão RAW do GitHub, como no seu caminho:
+# janbar/Datathon/tree/main/data/embeddings
+CAND_EMB_URL = os.getenv("CAND_EMB_URL", "https://raw.githubusercontent.com/janbar/Datathon/main/data/embeddings/candidatos.npy") 
+CAND_META_URL = os.getenv("CAND_META_URL", "https://raw.githubusercontent.com/janbar/Datathon/main/data/embeddings/candidatos.meta.json")
+VAGA_EMB_URL = os.getenv("VAGA_EMB_URL", "https://raw.githubusercontent.com/janbar/Datathon/main/data/embeddings/vagas.npy") 
+VAGA_META_URL = os.getenv("VAGA_META_URL", "https://raw.githubusercontent.com/janbar/Datathon/main/data/embeddings/vagas.meta.json") 
+
+# Cache de embeddings: Local (Fallback)
 EMB_DIR = Path(os.getenv("EMB_DIR", "data/embeddings")); EMB_DIR.mkdir(parents=True, exist_ok=True)
 CAND_EMB_PATH = EMB_DIR / "candidatos.npy"
 CAND_META_PATH = EMB_DIR / "candidatos.meta.json"
 VAGA_EMB_PATH = EMB_DIR / "vagas.npy"
 VAGA_META_PATH = EMB_DIR / "vagas.meta.json"
 
-# NOVAS VARIÁVEIS DE AMBIENTE para o cache remoto (URLs RAW)
-CAND_EMB_URL = os.getenv("CAND_EMB_URL") 
-CAND_META_URL = os.getenv("CAND_META_URL")
+# Colunas de metadados dos candidatos a exibir no ranking (AJUSTE CONFORME SEU CSV)
+CAND_META_COLS = ["nome", "cidade", "experiencia", "skills", "id"] 
 
-# ======================== TEXT UTILS (Sem Alteração) ========================
+# ======================== TEXT UTILS ========================
 _whitespace_re = re.compile(r"\s+")
-_SENT_SPLIT_RE = re.compile(r"(?<=[\.!?;:]|\n)\s+")
 
 def clean_text(t: str) -> str:
+    """Limpa e normaliza texto (minúsculas e remoção de espaços extras)."""
     if t is None: return ""
     t = t.strip().lower()
     return _whitespace_re.sub(" ", t)
 
 def proportional_score(sim: float, limiar: float) -> float:
-    return 100.0 if sim >= limiar else max(0.0, (sim/limiar)*100.0)
+    """Calcula o score de 0 a 100 baseado no limiar de aprovação."""
+    # Garante que o score não seja negativo e escala até 100
+    if limiar <= 0: return 0.0 # Evita divisão por zero
+    if sim >= limiar: return 100.0
+    return max(0.0, (sim / limiar) * 100.0)
 
-def split_sentences(text: str, min_chars: int = 25) -> List[str]:
-    if not text: return []
-    t = clean_text(text)
-    parts = [p.strip() for p in _SENT_SPLIT_RE.split(t) if p and p.strip()]
-    parts = [p for p in parts if len(p) >= min_chars]
-    return parts if parts else [t]
+# ======================== EMBEDDING CACHE UTILS ========================
 
-def top_n_pairs_by_cosine_optimized(A: List[str], B: List[str], encoder, top_n: int = 3):
-    if not A or not B: return []
-    A_vecs = encoder.encode(A, normalize_embeddings=True, show_progress_bar=False, convert_to_numpy=True)
-    B_vecs = encoder.encode(B, normalize_embeddings=True, show_progress_bar=False, convert_to_numpy=True)
-    similarity_matrix = A_vecs @ B_vecs.T
-    flat_indices = np.argpartition(similarity_matrix.flatten(), -top_n)[-top_n:]
-    pairs_indices = np.unravel_index(flat_indices, similarity_matrix.shape)
-    pairs = []
-    for i, j in zip(*pairs_indices):
-        pairs.append((int(i), int(j), float(similarity_matrix[i, j])))
-    pairs.sort(key=lambda x: x[2], reverse=True)
-    return pairs
-
-# ======================== EMB UTILS (Pequenas Alterações no Log) ========================
+@st.cache_data(show_spinner=False)
 def _hash_dataframe(df: pd.DataFrame) -> str:
+    """Gera um hash para o conteúdo de um DataFrame (usado para checagem de cache)."""
     buf = df.to_csv(index=False).encode("utf-8")
     return hashlib.md5(buf).hexdigest()
 
 def _save_embeddings(npy_path: Path, meta_path: Path, embs: np.ndarray, meta: dict) -> None:
+    """Tenta salvar embeddings e metadados no disco local."""
     try:
         np.save(npy_path, embs)
         meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        pass # Falha silenciosamente se o disco for efêmero
+        st.success(f"💾 Embeddings salvos no disco: {npy_path.name}")
+    except Exception as e:
+        # Silencia a falha em ambientes efêmeros (e.g., Streamlit Cloud)
+        st.warning(f"⚠️ Falha ao salvar cache no disco ({npy_path.name}): {e}") 
 
-def _load_embeddings(npy_path: Path, meta_path: Path) -> Tuple[np.ndarray | None, dict]:
+def _load_embeddings_url(npy_url: str | None, meta_url: str | None) -> Tuple[np.ndarray | None, dict]:
+    """Tenta carregar embeddings via URL RAW do GitHub (Maior Prioridade)."""
+    if not npy_url or not meta_url: return None, {}
+    try:
+        # 1. Carrega o arquivo .meta.json
+        meta_response = requests.get(meta_url, timeout=5)
+        if meta_response.status_code != 200: return None, {}
+        meta = json.loads(meta_response.text)
+        
+        # 2. Carrega o arquivo .npy (binário)
+        npy_response = requests.get(npy_url, timeout=20)
+        if npy_response.status_code != 200: return None, {}
+        
+        # Lê o array NumPy a partir dos bytes
+        embs = np.load(io.BytesIO(npy_response.content))
+        st.info(f"⚡ Cache de embeddings carregado via URL: {npy_url}")
+        return embs, meta
+    except Exception as e:
+        # st.error(f"Erro ao carregar URL Cache: {e}") # Descomente para debug
+        return None, {}
+
+def _load_embeddings_local(npy_path: Path, meta_path: Path) -> Tuple[np.ndarray | None, dict]:
+    """Tenta carregar embeddings do disco local (Fallback)."""
     if not npy_path.exists() or not meta_path.exists():
         return None, {}
     try:
         arr = np.load(npy_path); meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        st.info(f"💾 Cache de embeddings carregado do disco: {npy_path.name}")
         return arr, meta
     except Exception:
         return None, {}
 
-def get_or_build_embeddings(df: pd.DataFrame, text_col: str, npy_path: Path, meta_path: Path, model_dir: str) -> np.ndarray:
-    """Tenta carregar do cache local ou constrói e salva os embeddings."""
+def get_or_build_embeddings(df: pd.DataFrame, text_col: str, model_dir: str) -> np.ndarray:
+    """Carrega do cache (URL > Local) ou constrói (lento) os embeddings."""
+    
+    # Determina os caminhos e URLs
+    if text_col == "cv_text":
+        npy_path, meta_path, npy_url, meta_url = CAND_EMB_PATH, CAND_META_PATH, CAND_EMB_URL, CAND_META_URL
+    else:
+        npy_path, meta_path, npy_url, meta_url = VAGA_EMB_PATH, VAGA_META_PATH, VAGA_EMB_URL, VAGA_META_URL
+
+    # Gera a assinatura e metadados esperados
     sig = _hash_dataframe(df[[text_col]])
-    # Usamos MODEL_DIR como assinatura
     meta_expected = {"model_source": model_dir, "text_col": text_col, "signature": sig, "version": APP_VERSION}
     
-    # 1. Tenta carregar do cache local
-    embs, meta = _load_embeddings(npy_path, meta_path)
-    if embs is not None and meta == meta_expected and embs.ndim == 2 and embs.shape[0] == len(df):
-        st.info(f"💾 Cache de embeddings para '{text_col}' carregado do disco.")
-        return embs
+    # Validação de cache (função auxiliar)
+    def _is_valid(embs: np.ndarray | None, meta: dict, df: pd.DataFrame) -> bool:
+        return (
+            embs is not None and 
+            meta == meta_expected and 
+            embs.ndim == 2 and 
+            embs.shape[0] == len(df)
+        )
+
+    # 1. Tenta carregar do cache remoto (URL) - PRIORIDADE MÁXIMA
+    embs, meta = _load_embeddings_url(npy_url, meta_url)
+    if _is_valid(embs, meta, df): return embs
+
+    # 2. Tenta carregar do cache local
+    embs, meta = _load_embeddings_local(npy_path, meta_path)
+    if _is_valid(embs, meta, df): return embs
         
-    # 2. Se falhar ou não existir, constrói (lento)
-    st.warning(f"⏳ Reconstruindo embeddings para '{text_col}' (Não há cache válido).")
+    # 3. Se falhar ou não existir, constrói (Lento)
+    st.warning(f"⏳ Reconstruindo embeddings para '{text_col}' (Não há cache válido). Isso pode levar alguns minutos...")
     texts = df[text_col].astype(str).tolist()
     embs = embed_texts(texts, model_dir) 
-    _save_embeddings(npy_path, meta_path, embs, meta_expected)
-    st.success(f"✅ Embeddings gerados. Salvo (se o disco não for efêmero).")
+    
+    _save_embeddings(npy_path, meta_path, embs, meta_expected) # Tenta salvar localmente para próxima vez
+    st.success(f"✅ Embeddings gerados para '{text_col}'.")
     return embs
 
-# ======================== MODEL / ENCODER (Foco no Local) ========================
+# ======================== MODEL / ENCODER ========================
 @st.cache_resource(show_spinner="Carregando Encoder (Priorizando Modelo Local)...", ttl=None)
 def load_model(model_path: str):
+    """Carrega o SentenceTransformer, priorizando o modelo local."""
     from sentence_transformers import SentenceTransformer
     
-    # 📌 Prioriza o caminho local do projeto (seu modelo)
     st.info(f"Fazendo load do modelo a partir do caminho: **{model_path}**")
     try:
         model = SentenceTransformer(model_path) 
         st.success(f"✅ Modelo customizado carregado com sucesso de: **{model_path}**")
         return model
     except Exception as e:
-        # Fallback para o Hub (caso o modelo não esteja na pasta esperada)
+        # O modelo HF é usado como fallback caso o local falhe.
         st.error(f"❌ Falha ao carregar modelo de: {model_path}. Tentando fallback: {HF_MODEL_NAME}. Erro: {e}")
         try:
             model = SentenceTransformer(HF_MODEL_NAME)
@@ -137,40 +175,55 @@ def load_model(model_path: str):
 
 @st.cache_data(show_spinner="Gerando embeddings em lote...", ttl=3600, max_entries=5)
 def embed_texts(texts: List[str], model_path: str) -> np.ndarray:
+    """Gera embeddings para uma lista de textos."""
     model = load_model(model_path)
+    # Aplica a limpeza antes de embedar
+    texts = [clean_text(t) for t in texts] 
+    # **IMPORTANTE**: Normaliza os embeddings para garantir que o produto escalar seja a similaridade do cosseno.
     return model.encode(texts, normalize_embeddings=True, show_progress_bar=False, convert_to_numpy=True)
 
 @st.cache_data(show_spinner="Gerando embedding...", ttl=3600, max_entries=20)
 def embed_text(text: str, model_path: str) -> np.ndarray:
+    """Gera o embedding para um único texto, garantindo que o resultado seja 1D."""
     model = load_model(model_path)
-    return model.encode(text, normalize_embeddings=True, show_progress_bar=False, convert_to_numpy=True)
+    text_clean = clean_text(text)
+    # **IMPORTANTE**: Normaliza os embeddings
+    emb = model.encode(text_clean, normalize_embeddings=True, show_progress_bar=False, convert_to_numpy=True)
+    return emb.flatten()
 
-# ======================== DATA LOADERS (Prioridade na URL) ========================
+# ======================== DATA LOADERS ========================
 @st.cache_data(show_spinner=False)
 def _concat_all_columns(df: pd.DataFrame, target_col: str) -> pd.DataFrame:
+    """Concatena todas as colunas de texto em uma única coluna para o SBERT."""
     out = df.copy()
     if target_col in out.columns: out = out.drop(columns=[target_col])
-    s = out.fillna("").astype(str)
+    # Tenta excluir colunas que são provavelmente IDs/índices
+    cols_to_concat = [c for c in out.columns if c.lower() not in ["id", "index", "uid", "score", "rank"]]
+    s = out[cols_to_concat].fillna("").astype(str)
+    # Concatena os valores não vazios separados por espaço
     out[target_col] = s.apply(lambda row: " ".join([v for v in row.values if v != ""]).strip(), axis=1)
     return out
 
 @st.cache_data(show_spinner=False)
 def _read_csv_local_or_url(local_path: str, url_env: str | None) -> pd.DataFrame | None:
+    """Carrega CSV da URL (Prioridade) ou do disco local (Fallback)."""
     # 1. Tenta URL (Prioridade - Para deploy Cloud)
     if url_env:
         try:
             r = requests.head(url_env, timeout=5)
             if r.status_code == 200:
+                df = pd.read_csv(url_env)
                 st.info(f"🔗 Dados lidos da URL: {url_env}")
-                return pd.read_csv(url_env)
+                return df
         except Exception: 
             pass
             
     # 2. Tenta caminho local (Fallback - Para teste local)
     try:
         if os.path.exists(local_path): 
+            df = pd.read_csv(local_path)
             st.info(f"📂 Dados lidos do disco local: {local_path}")
-            return pd.read_csv(local_path)
+            return df
     except Exception: 
         pass
         
@@ -178,27 +231,31 @@ def _read_csv_local_or_url(local_path: str, url_env: str | None) -> pd.DataFrame
 
 @st.cache_data(show_spinner="Carregando bases de dados...", ttl=None)
 def load_fixed_bases() -> Tuple[pd.DataFrame, pd.DataFrame, list]:
+    """Carrega as bases de candidatos e vagas e concatena colunas de texto."""
     logs = []
-    cand = _read_csv_local_or_url(BASE_CANDIDATOS_PATH, CANDIDATOS_CSV_URL)
+    
+    cand = _read_csv_local_or_url(BASE_CANDIDATOS_PATH, CANDIDATOS_CSV_URL) 
     vaga = _read_csv_local_or_url(BASE_VAGAS_PATH, VAGAS_CSV_URL)
 
-    # Dados de Amostra (Fallback final)
+    # Fallback para dados de Amostra (se nenhum arquivo for encontrado)
     if cand is None or cand.empty:
         logs.append("⚠️ Não encontrei candidatos via URL ou local. Usando amostra.")
         cand = pd.DataFrame({
-            "nome": ["Ana Silva", "Carlos Souza", "Maria Oliveira", "Pedro Rocha"],
-            "skills": ["Python Airflow Spark", "Java Spring SQL", "Python Pandas Matplotlib", "C++ Linux Multithreading"],
-            "experiencia": ["3 anos em dados", "5 anos em backend", "2 anos em análise", "8 anos em sistemas embarcados"],
-            "cidade": ["São Paulo", "Rio de Janeiro", "Belo Horizonte", "Curitiba"]
+            "nome": ["Ana Silva", "Carlos Souza"],
+            "skills": ["Python Airflow Spark", "Java Spring SQL"],
+            "experiencia": ["3 anos em dados", "5 anos em backend"],
+            "cidade": ["São Paulo", "Rio de Janeiro"],
+            "id": [1, 2]
         })
     if vaga is None or vaga.empty:
         logs.append("⚠️ Não encontrei vagas via URL ou local. Usando amostra.")
         vaga = pd.DataFrame({
-            "titulo": ["Engenheira de Dados Senior", "Desenvolvedor Backend Java", "Analista de Dados Júnior"],
-            "requisitos": ["Python, Spark, Airflow, AWS", "Java, Spring Boot, SQL, REST APIs", "Python, Pandas, Power BI, SQL"],
-            "descricao": ["Projetos de dados em ambiente cloud. Criação de pipelines ETL.", "Desenvolvimento de microserviços de alta performance.", "Criação de relatórios e dashboards. Suporte a tomada de decisão."]
+            "titulo": ["Engenheira de Dados Senior", "Desenvolvedor Backend Java"],
+            "requisitos": ["Python, Spark, Airflow, AWS", "Java, Spring Boot, SQL, REST APIs"],
+            "descricao": ["Projetos de dados em ambiente cloud. Criação de pipelines ETL.", "Desenvolvimento de microserviços de alta performance."]
         })
-
+        
+    # Concatena colunas de texto para o SBERT
     cand = _concat_all_columns(cand, "cv_text")
     vaga = _concat_all_columns(vaga, "vaga_text")
     
@@ -208,54 +265,40 @@ def load_fixed_bases() -> Tuple[pd.DataFrame, pd.DataFrame, list]:
 
 # ======================== LÓGICA DE INICIALIZAÇÃO ========================
 
-# 1. Configurações da Página
+# 1. Configurações da Página 
 st.set_page_config(
     page_title=APP_NAME, 
     layout="wide", 
     initial_sidebar_state="expanded"
 )
 
-# 2. Carrega o modelo (Priorizando o MODEL_DIR)
-with st.spinner(f"Preparando o Encoder (Seu Modelo: {MODEL_DIR})..."):
-    try:
-        load_model(MODEL_DIR)
-    except Exception:
-        st.stop()
+# 2. Carrega o modelo 
+load_model(MODEL_DIR)
 
-
-# 3. Carrega Bases Fixas (priorizando URL)
+# 3. Carrega Bases Fixas (e concatena o texto)
 candidatos_df, vagas_df, _logs = load_fixed_bases()
 
-# Guardar bases na session_state
-if "candidatos_df" not in st.session_state:
-    st.session_state["candidatos_df"] = candidatos_df.copy()
-if "vagas_df" not in st.session_state:
-    st.session_state["vagas_df"] = vagas_df.copy()
+# Guarda bases na session_state
+st.session_state["candidatos_df"] = candidatos_df.copy()
+st.session_state["vagas_df"] = vagas_df.copy()
 
-# 4. Tenta carregar embeddings de base OU recalcula se o cache estiver vazio
-cand_embs_cache = None
-vaga_embs_cache = None
-cache_loaded = False
-if not CAND_EMB_PATH.exists() or not VAGA_EMB_PATH.exists():
-    with st.spinner("⚡ Preparando embeddings iniciais (base)..."):
+# 4. Tenta carregar embeddings de base OU recalcula
+# Executado apenas na primeira vez
+if "cache_loaded" not in st.session_state:
+    with st.spinner("⚡ Preparando e carregando embeddings iniciais (Cache ou Reconstrução)..."):
         try:
-            # Usamos MODEL_DIR como source para o get_or_build_embeddings
-            cand_embs_cache = get_or_build_embeddings(st.session_state["candidatos_df"], "cv_text", CAND_EMB_PATH, CAND_META_PATH, MODEL_DIR)
-            vaga_embs_cache = get_or_build_embeddings(st.session_state["vagas_df"], "vaga_text", VAGA_EMB_PATH, VAGA_META_PATH, MODEL_DIR)
+            cand_embs_cache = get_or_build_embeddings(st.session_state["candidatos_df"], "cv_text", MODEL_DIR)
+            vaga_embs_cache = get_or_build_embeddings(st.session_state["vagas_df"], "vaga_text", MODEL_DIR)
             cache_loaded = True
-        except Exception:
-            st.warning("Não foi possível gerar os embeddings iniciais.")
-else:
-    try:
-        cand_embs_cache, _ = _load_embeddings(CAND_EMB_PATH, CAND_META_PATH)
-        vaga_embs_cache, _ = _load_embeddings(VAGA_EMB_PATH, VAGA_META_PATH)
-        cache_loaded = True
-    except Exception:
-        pass
+        except Exception as e:
+            st.error(f"Não foi possível carregar ou gerar os embeddings iniciais: {e}")
+            cand_embs_cache = None
+            vaga_embs_cache = None
+            cache_loaded = False
 
-st.session_state["cache_loaded"] = cache_loaded
-st.session_state["cand_embs_cache"] = cand_embs_cache
-st.session_state["vaga_embs_cache"] = vaga_embs_cache
+    st.session_state["cache_loaded"] = cache_loaded
+    st.session_state["cand_embs_cache"] = cand_embs_cache
+    st.session_state["vaga_embs_cache"] = vaga_embs_cache
 
 
 # ======================== SIDEBAR E UI PRINCIPAL ========================
@@ -270,371 +313,198 @@ with st.sidebar:
 
     st.divider()
     st.markdown("#### 🛠️ Cache de Embeddings")
+    cache_loaded = st.session_state["cache_loaded"]
     st.info(f"Status do Cache: {'✅ Disponível' if cache_loaded else '❌ Indisponível'}")
 
-    if st.button("⚡ Gerar/Atualizar Cache de Base", help="Salva os embeddings das bases atuais no disco (Se o armazenamento não for efêmero)."):
+    if st.button("⚡ Gerar/Atualizar Cache de Base", help="Força a reconstrução e tentativa de salvamento do cache local."):
         with st.spinner("Gerando e salvando cache (candidatos e vagas)…"):
-            st.session_state["cand_embs_cache"] = get_or_build_embeddings(st.session_state["candidatos_df"], "cv_text", CAND_EMB_PATH, CAND_META_PATH, MODEL_DIR)
-            st.session_state["vaga_embs_cache"] = get_or_build_embeddings(st.session_state["vagas_df"], "vaga_text", VAGA_EMB_PATH, VAGA_META_PATH, MODEL_DIR)
+            # Força a reconstrução (ignora caches existentes)
+            st.session_state["cand_embs_cache"] = get_or_build_embeddings(st.session_state["candidatos_df"], "cv_text", "FORCE_REBUILD")
+            st.session_state["vaga_embs_cache"] = get_or_build_embeddings(st.session_state["vagas_df"], "vaga_text", "FORCE_REBUILD")
             st.session_state["cache_loaded"] = True
-            st.success(f"Cache gerado. Recarregue a página para usar o cache.")
-
+            st.success(f"Cache gerado. Recarregue a página (F5) para usar o novo cache na inicialização.")
 
 # Exibe logs de carregamento de base
 if _logs:
-    with st.expander("Logs de Carregamento de Bases"):
-        for m in _logs: st.write(m)
+    with st.expander("Logs de Carregamento de Bases", expanded=False):
+        for m in _logs: st.caption(m)
 
 
-st.title("🔎 Match CV × Vaga (SBERT) - Análise Semântica")
-st.markdown(f"**Modelo em Uso:** {MODEL_DIR}")
-st.markdown("Use as abas abaixo para realizar diferentes tipos de análise de similaridade.")
+st.title("🔎 RECRUT.AI - Match Semântico (Especialização)")
+st.markdown(f"Análise de similaridade entre Curricula e Vagas usando **Sentence-BERT** (Modelo: **{MODEL_DIR}**)")
 
-# -------------------- TABS --------------------
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "1×1 (Texto)", "Batch (Uploads)", "Explain (Trechos)", "Ranking Base", "Bases de Dados",
-])
+# -------------------- TABS (Apenas Ranking e Bases) --------------------
+# Abas 1x1, Batch e Explain removidas conforme solicitado
+tab_ranking, tab_bases = st.tabs(["📊 Ranking por Vaga", "📋 Bases de Dados"])
 
-# ############## TAB 1: Match 1x1 ##############
-with tab1:
-    st.subheader("Match 1×1 — Cálculo de Similaridade")
-    colA, colB = st.columns(2)
-    with colA: 
-        cv_text = st.text_area("Currículo (CV) — texto puro", height=250, placeholder="Cole o texto do currículo aqui...", key="t1_cv")
-    with colB: 
-        vaga_text = st.text_area("Descrição da Vaga — texto puro", height=250, placeholder="Cole a descrição da vaga aqui...", key="t1_vaga")
-    
-    clean = st.checkbox("Aplicar limpeza (lower + remover quebras)", True)
-    
-    if st.button("Calcular Similaridade", key="btn_1x1", use_container_width=True):
-        if not cv_text or not vaga_text:
-            st.warning("Informe o texto do CV e da Vaga para calcular.")
-        else:
-            with st.spinner("Calculando similaridade..."):
-                cv_raw = clean_text(cv_text) if clean else cv_text
-                vaga_raw = clean_text(vaga_text) if clean else vaga_text
-                
-                # Usa o MODEL_DIR
-                cv_vec = embed_text(cv_raw, MODEL_DIR).flatten()
-                vaga_vec = embed_text(vaga_raw, MODEL_DIR).flatten()
-                
-                sim = float(np.dot(cv_vec, vaga_vec))
-                score = proportional_score(sim, limiar)
-                aprovado = sim >= limiar
-                
-                st.write("---")
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Similaridade (Cosine)", f"{sim:.4f}")
-                with col2:
-                    st.metric("Score (%)", f"{score:.2f}%", help="Proporcional ao Limiar")
-                with col3:
-                    status_emoji = "🎉 Aprovado" if aprovado else "❌ Não Aprovado"
-                    st.metric("Status (Limiar > 0.75)", status_emoji)
-                
-                progress_val = min(sim / limiar, 1.0) if sim < limiar else 1.0
-                st.progress(progress_val, f"Progresso para o Limiar ({limiar:.2f}): {progress_val*100:.1f}%")
-
-# ############## TAB 2: Batch (Uploads) ##############
-with tab2:
-    st.subheader("Batch — Comparação de Bases Uploaded (N×M)")
-    st.caption("Upload de duas bases separadas (Candidatos e Vagas). Calculamos o Top K de vagas para cada candidato.")
-    
-    col_up_l, col_up_r = st.columns(2)
-    with col_up_l:
-        up_cand = st.file_uploader("Upload CSV Candidatos", type=["csv"], key="u1_cand")
-        if up_cand:
-            candidatos_df_batch = _concat_all_columns(pd.read_csv(up_cand), "cv_text")
-            st.info(f"{len(candidatos_df_batch)} candidatos carregados.")
-            st.dataframe(candidatos_df_batch.head(3), use_container_width=True)
-        else:
-            candidatos_df_batch = pd.DataFrame()
-
-    with col_up_r:
-        up_vaga = st.file_uploader("Upload CSV Vagas", type=["csv"], key="u2_vaga")
-        if up_vaga:
-            vagas_df_batch = _concat_all_columns(pd.read_csv(up_vaga), "vaga_text")
-            st.info(f"{len(vagas_df_batch)} vagas carregadas.")
-            st.dataframe(vagas_df_batch.head(3), use_container_width=True)
-        else:
-            vagas_df_batch = pd.DataFrame()
-            
-    top_k = st.number_input("Top K de Vagas por Candidato", 1, 100, 5, key="topk_batch")
-    
-    if st.button("Processar Match N×M", key="btn_batch", use_container_width=True):
-        if len(candidatos_df_batch) == 0 or len(vagas_df_batch) == 0:
-            st.error("Por favor, faça upload de bases válidas para Candidatos e Vagas.")
-        else:
-            with st.spinner(f"Processando {len(candidatos_df_batch)} CVs × {len(vagas_df_batch)} Vagas..."):
-                emb_cvs = embed_texts(candidatos_df_batch["cv_text"].astype(str).tolist(), MODEL_DIR)
-                emb_vgs = embed_texts(vagas_df_batch["vaga_text"].astype(str).tolist(), MODEL_DIR)
-                sim_matrix = emb_cvs @ emb_vgs.T
-                
-                rows = []
-                for i in range(len(candidatos_df_batch)):
-                    sims = sim_matrix[i]; top_idx = np.argsort(-sims)[:top_k]
-                    for rank, j in enumerate(top_idx, start=1):
-                        rows.append({
-                            "Candidato (Idx)": i, 
-                            "Vaga (Idx)": int(j), 
-                            "Rank": rank,
-                            "Similaridade": float(sims[j]),
-                            "Score (%)": round(proportional_score(float(sims[j]), limiar), 2),
-                            "Aprovado": bool(sims[j] >= limiar)
-                        })
-                
-                out_df = pd.DataFrame(rows)
-                st.success(f"🎉 Processado: {len(out_df)} matches no Top K.")
-                
-                st.dataframe(
-                    out_df, 
-                    use_container_width=True, 
-                    hide_index=True,
-                    column_config={
-                        "Similaridade": st.column_config.ProgressColumn("Similaridade", format="%.4f", min_value=0.5, max_value=1.0),
-                        "Score (%)": st.column_config.ProgressColumn("Score (%)", format="%f", min_value=0, max_value=100),
-                        "Aprovado": st.column_config.CheckboxColumn("Aprovado?", disabled=True),
-                    }
-                )
-                
-                aprovados = out_df["Aprovado"].sum()
-                st.info(f"**Estatísticas:** {aprovados} matches aprovados ({aprovados/len(out_df)*100:.1f}%) no Top {top_k}.")
-                
-                st.download_button(
-                    "💾 Baixar resultados (CSV)", 
-                    out_df.to_csv(index=False).encode("utf-8"),
-                    file_name="matches_topk_batch.csv", 
-                    mime="text/csv",
-                    key="dl_batch"
-                )
-
-# ############## TAB 3: Explain (Trechos) ##############
-with tab3:
-    st.subheader("Explain — Top Trechos Mais Similares")
-    st.caption("Quebra os textos em sentenças e encontra os pares de sentenças com maior similaridade (ótimo para debugging).")
-    
-    col_explain1, col_explain2 = st.columns(2)
-    with col_explain1: 
-        cv_t = st.text_area("CV Completo", height=200, placeholder="Cole o texto completo do CV...", key="cv_explain")
-    with col_explain2: 
-        vg_t = st.text_area("Vaga Completa", height=200, placeholder="Cole a descrição completa da vaga...", key="vaga_explain")
-    
-    col_config1, col_config2 = st.columns(2)
-    with col_config1:
-        top_n = st.number_input("Top N Pares", 1, 10, 3, key="topn_explain")
-    with col_config2:
-        min_chars = st.number_input("Mín. Caracteres/Sentença", 10, 500, 25, key="minchars_explain")
-    
-    if st.button("Gerar Explain", key="btn_explain", use_container_width=True):
-        if not cv_t or not vg_t:
-            st.error("Informe ambos os textos (CV e Vaga).")
-        else:
-            with st.spinner("Analisando trechos similares..."):
-                model = load_model(MODEL_DIR)
-                cv_sentences = split_sentences(cv_t, min_chars)
-                vaga_sentences = split_sentences(vg_t, min_chars)
-                
-                if not cv_sentences or not vaga_sentences:
-                    st.warning("Não foi possível extrair sentenças suficientes. Tente reduzir o 'Mín. Caracteres/Sentença'.")
-                else:
-                    st.info(f"CV: {len(cv_sentences)} sentenças. Vaga: {len(vaga_sentences)} sentenças.")
-                    pairs = top_n_pairs_by_cosine_optimized(cv_sentences, vaga_sentences, model, int(top_n))
-                    
-                    if pairs:
-                        rows = []
-                        for r, (i, j, sim) in enumerate(pairs):
-                            rows.append({
-                                "Rank": r+1, 
-                                "Similaridade": round(float(sim), 6),
-                                "CV Snippet": cv_sentences[i][:150] + ("..." if len(cv_sentences[i]) > 150 else ""),
-                                "Vaga Snippet": vaga_sentences[j][:150] + ("..." if len(vaga_sentences[j]) > 150 else "")
-                            })
-                        
-                        df_pairs = pd.DataFrame(rows)
-                        st.success(f"Top {len(pairs)} pares encontrados!")
-
-                        st.dataframe(
-                            df_pairs, 
-                            use_container_width=True, 
-                            hide_index=True,
-                            column_config={
-                                "Similaridade": st.column_config.ProgressColumn("Similaridade", format="%.6f", min_value=0.5, max_value=1.0)
-                            }
-                        )
-                        
-                        st.subheader("📋 Detalhes dos Trechos (Visualização Completa)")
-                        for idx, row in df_pairs.iterrows():
-                            with st.expander(f"**Par #{idx+1} | Similaridade: {row['Similaridade']:.4f}**"):
-                                col_left, col_right = st.columns(2)
-                                with col_left:
-                                    st.write("**Trecho do CV:**")
-                                    st.code(cv_sentences[int(pairs[idx][0])])
-                                with col_right:
-                                    st.write("**Trecho da Vaga:**")
-                                    st.code(vaga_sentences[int(pairs[idx][1])])
-                    else:
-                        st.warning("Não foi possível encontrar pares similares.")
-
-
-# ############## TAB 4: Ranking por Vaga (Base Fixa) ##############
-with tab4:
-    st.subheader("Ranking por Vaga — Base Fixa/Cache")
+# ############## TAB 1: Ranking por Vaga (Base Fixa) ##############
+with tab_ranking:
+    st.header("Ranking de Candidatos por Vaga (N×1)")
+    st.caption("Compara todos os candidatos da base fixa contra a vaga selecionada, utilizando embeddings.")
     
     vdf = st.session_state["vagas_df"]
     cdf = st.session_state["candidatos_df"]
     
     def _vaga_label(row: pd.Series) -> str:
+        """Formata o rótulo da vaga para o selectbox."""
         title = row.get("titulo") or ""
         vt = str(row.get("vaga_text", ""))
         base_txt = title.strip() or (vt[:80] + ("…" if len(vt) > 80 else ""))
         return f"({row.name}) {base_txt}"
     
-    if len(vdf) > 0:
-        options = vdf.apply(_vaga_label, axis=1).tolist()
-        idx = st.selectbox("Selecione a vaga", options=range(len(options)), format_func=lambda i: options[i])
+    if len(vdf) > 0 and len(cdf) > 0:
+        col_sel, col_limpeza = st.columns([3, 1])
+        with col_sel:
+            options = vdf.apply(_vaga_label, axis=1).tolist()
+            idx = st.selectbox("Selecione a vaga para ranquear", options=range(len(options)), format_func=lambda i: options[i], key="sel_vaga_ranking")
         
-        col_l, col_r = st.columns([1,1])
-        with col_l: 
-            top_n = st.number_input("Top N Candidatos", 1, len(cdf), min(10, len(cdf)), key="topn_ranking")
-        with col_r: 
-            clean_rank = st.checkbox("Aplicar limpeza nos textos (desativa o cache)", False, key="clean_ranking")
-            st.caption(f"Cache de embeddings: {'✅ Ativo' if st.session_state['cache_loaded'] and not clean_rank else '❌ Inativo/Ignorado'}")
+        vaga_text_sel = str(vdf.iloc[idx]["vaga_text"])
+
+        with col_limpeza:
+            # Se o cache estiver ativo, a limpeza desativa o cache e força a reconstrução
+            clean_rank = st.checkbox("Aplicar limpeza nos textos (Recalcula embeddings)", not cache_loaded, key="clean_ranking")
+            # Mensagem de status do cache dentro do contexto da limpeza
+            st.caption(f"Cache de Embeddings: {'✅ Ativo' if cache_loaded and not clean_rank else '❌ Inativo/Recálculo'}")
 
         with st.expander("Ver descrição completa da vaga"):
-            vaga_text_sel = str(vdf.iloc[idx]["vaga_text"])
             st.write(vaga_text_sel)
-
-        if st.button("🔍 Gerar Ranking", key="btn_ranking", use_container_width=True):
-            with st.spinner("Calculando ranking..."):
-                
-                # 1. Embedding da Vaga
-                if st.session_state["cache_loaded"] and not clean_rank:
-                    emb_vaga = st.session_state["vaga_embs_cache"][idx]
-                elif clean_rank:
-                    emb_vaga = embed_text(clean_text(vaga_text_sel), MODEL_DIR).flatten()
-                else: 
-                    emb_vaga = embed_text(vaga_text_sel, MODEL_DIR).flatten()
-
-                # 2. Embeddings dos Candidatos
-                if st.session_state["cache_loaded"] and not clean_rank:
-                    emb_cvs = st.session_state["cand_embs_cache"]
-                else: 
-                    cvs = cdf["cv_text"].astype(str).tolist()
-                    if clean_rank: 
-                        cvs = [clean_text(x) for x in cvs]
-                    emb_cvs = embed_texts(cvs, MODEL_DIR)
-
-                # 3. Cálculo de similaridade e ordenação
-                sims = emb_cvs @ emb_vaga.T
-                order = np.argsort(-sims)[:int(top_n)]
-                
-                rows = []
-                for rank, i in enumerate(order, start=1):
-                    sim = float(sims[i])
-                    score = proportional_score(sim, limiar)
-                    row = {
-                        "Rank": rank, 
-                        "Similaridade": round(sim, 6),
-                        "Score (%)": round(score, 2), 
-                        "Aprovado": bool(sim >= limiar),
-                    }
+        
+        # --- Controles de Ranking ---
+        col_controles = st.columns([1, 4])
+        with col_controles[0]:
+            top_n = st.number_input("Top N Candidatos", 1, len(cdf), min(10, len(cdf)), key="topn_ranking")
+        with col_controles[1]:
+            if st.button("🔍 GERAR RANKING", key="btn_ranking", use_container_width=True):
+                with st.spinner("Calculando ranking..."):
                     
-                    for col in ["nome", "id", "titulo"]:
-                        if col in cdf.columns: 
-                            row[col] = cdf.iloc[i][col]
+                    # 1. Embeddings: Prioriza cache, mas recalcula se a limpeza for ativada
                     
-                    rows.append(row)
-                
-                res = pd.DataFrame(rows)
-                
-                st.success(f"🎉 Ranking gerado: Top {len(res)} candidatos.")
+                    # Embeddings dos Candidatos (N)
+                    if cache_loaded and not clean_rank:
+                        emb_cvs = st.session_state["cand_embs_cache"]
+                    else: 
+                        cvs = cdf["cv_text"].astype(str).tolist()
+                        emb_cvs = embed_texts(cvs, MODEL_DIR) # embed_texts já aplica clean_text
 
-                st.dataframe(
-                    res, 
-                    use_container_width=True, 
-                    hide_index=True,
-                    column_config={
-                        "Similaridade": st.column_config.ProgressColumn("Similaridade", format="%.4f", min_value=0.5, max_value=1.0),
+                    # Embedding da Vaga (1)
+                    if cache_loaded and not clean_rank:
+                        # Seleciona o embedding pré-calculado da vaga
+                        emb_vaga = st.session_state["vaga_embs_cache"][idx]
+                    else: 
+                        # Recalcula o embedding da vaga (já é normalizado e flatten)
+                        emb_vaga = embed_text(vaga_text_sel, MODEL_DIR) 
+
+                    # 2. Cálculo de similaridade (Produto escalar, pois ambos estão normalizados)
+                    # O produto escalar entre vetores unitários é a similaridade do cosseno
+                    sims = emb_cvs @ emb_vaga.T
+                    
+                    # Ordenação e Top N
+                    order = np.argsort(-sims)[:int(top_n)]
+                    
+                    rows = []
+                    for rank, i in enumerate(order, start=1):
+                        sim = float(sims[i])
+                        score = proportional_score(sim, limiar)
+                        
+                        row = {
+                            "Rank": rank, 
+                            "Similaridade": round(sim, 6),
+                            "Score (%)": round(score, 2), 
+                            "Aprovado": bool(sim >= limiar),
+                        }
+                        
+                        # Adiciona metadados do candidato para exibição
+                        for col in CAND_META_COLS:
+                            if col in cdf.columns: 
+                                val = cdf.iloc[i][col]
+                                if col in ["experiencia", "skills"] and isinstance(val, str):
+                                    # Limita o texto para visualização no dataframe
+                                    row[col] = val[:100] + "..." if len(val) > 100 else val
+                                else:
+                                    row[col] = val
+                        
+                        rows.append(row)
+                    
+                    res = pd.DataFrame(rows)
+                    
+                    st.success(f"🎉 Ranking gerado: Top {len(res)} candidatos.")
+
+                    # --- Visualização de Resultados ---
+                    col_config = {
+                        # A similaridade máxima é 1.0 (vetores idênticos e normalizados)
+                        "Similaridade": st.column_config.ProgressColumn("Similaridade", format="%.4f", min_value=0.0, max_value=1.0),
                         "Score (%)": st.column_config.ProgressColumn("Score (%)", format="%f", min_value=0, max_value=100),
                         "Aprovado": st.column_config.CheckboxColumn("Aprovado?", disabled=True),
+                        "nome": "Nome",
+                        "cidade": "Cidade",
+                        "experiencia": "Experiência (Resumo)",
+                        "skills": "Skills (Resumo)",
                     }
-                )
-                
-                aprovados = res["Aprovado"].sum()
-                col1, col2, col3 = st.columns(3)
-                with col1: st.metric("Candidatos Aprovados", aprovados)
-                with col2: st.metric("Taxa de Aprovação", f"{aprovados/len(res)*100:.1f}%")
-                with col3: st.metric("Melhor Similaridade", f"{res.iloc[0]['Similaridade']:.4f}")
-                
-                st.download_button(
-                    "💾 Baixar Ranking (CSV)", 
-                    res.to_csv(index=False).encode("utf-8"),
-                    file_name="ranking_por_vaga.csv", 
-                    mime="text/csv",
-                    key="dl_ranking"
-                )
+                    
+                    st.dataframe(res, use_container_width=True, hide_index=True, column_config=col_config)
+                    
+                    # Métricas de Resumo
+                    aprovados = res["Aprovado"].sum()
+                    col1, col2, col3 = st.columns(3)
+                    with col1: st.metric("Candidatos Aprovados", aprovados)
+                    with col2: st.metric("Taxa de Aprovação", f"{aprovados/len(res)*100:.1f}%")
+                    with col3: st.metric("Melhor Similaridade", f"{res.iloc[0]['Similaridade']:.4f}")
+                    
+                    st.download_button(
+                        "💾 Baixar Ranking (CSV)", 
+                        res.to_csv(index=False).encode("utf-8"),
+                        file_name="ranking_por_vaga.csv", 
+                        mime="text/csv",
+                        key="dl_ranking"
+                    )
     else:
-        st.warning("Nenhuma vaga disponível na base de dados carregada para ranking.")
+        st.warning("Nenhuma vaga ou candidato disponível na base de dados carregada para ranking.")
 
 
-# ############## TAB 5: Bases de Dados ##############
-with tab5:
-    st.subheader("Bases de Dados Carregadas em Memória")
+# ############## TAB 2: Bases de Dados ##############
+with tab_bases:
+    st.header("Visualização das Bases de Dados Carregadas")
 
-    def _preview_df(df: pd.DataFrame, text_cols: list[str], max_chars: int = 400, max_cols: int = 20) -> pd.DataFrame:
+    def _preview_df(df: pd.DataFrame, text_cols: list[str], max_chars: int = 300) -> pd.DataFrame:
+        """Prepara um dataframe para visualização, truncando colunas de texto longas."""
         df = df.copy()
-        
         view_cols = [c for c in df.columns if c not in text_cols] + text_cols
-        view_cols = view_cols[:max_cols] if view_cols else df.columns[:max_cols]
         dfv = df[view_cols].copy()
-
         for c in dfv.columns:
             if c in text_cols and dfv[c].dtype == object:
                 dfv[c] = dfv[c].str.slice(0, max_chars) + (dfv[c].apply(lambda x: '...' if isinstance(x, str) and len(x) > max_chars else ''))
         return dfv
 
     # ---- Candidatos ----
-    st.markdown("#### Candidatos (Preview)")
+    st.subheader("Candidatos")
     cand_full = st.session_state["candidatos_df"]
-    cand_prev = _preview_df(cand_full, text_cols=["cv_text"], max_chars=300, max_cols=10)
-    st.data_editor(cand_prev, use_container_width=True, hide_index=True)
+    st.metric("Total de Candidatos", len(cand_full))
+    st.caption(f"Colunas concatenadas para match: **cv_text**")
     
-    col_dl_c, col_met_c = st.columns([1,2])
+    col_dl_c, col_preview_c = st.columns([1, 3])
     with col_dl_c:
-        st.download_button(
-            "💾 Baixar CSV Candidatos (Completo)",
-            data=cand_full.to_csv(index=False).encode("utf-8"),
-            file_name="candidatos_completo.csv",
-            mime="text/csv",
-            key="dl_candidatos"
-        )
-    with col_met_c:
-        st.metric("Total Candidatos", len(cand_full))
+        st.download_button("💾 Baixar CSV (Completo)", data=cand_full.to_csv(index=False).encode("utf-8"), file_name="candidatos_completo.csv", mime="text/csv", key="dl_candidatos")
+    with col_preview_c:
+        st.dataframe(_preview_df(cand_full, text_cols=["cv_text"]), use_container_width=True, hide_index=True)
 
     st.divider()
 
     # ---- Vagas ----
-    st.markdown("#### Vagas (Preview)")
+    st.subheader("Vagas")
     vagas_full = st.session_state["vagas_df"]
-    vagas_prev = _preview_df(vagas_full, text_cols=["vaga_text"], max_chars=300, max_cols=10)
-    st.data_editor(vagas_prev, use_container_width=True, hide_index=True)
+    st.metric("Total de Vagas", len(vagas_full))
+    st.caption(f"Colunas concatenadas para match: **vaga_text**")
     
-    col_dl_v, col_met_v = st.columns([1,2])
+    col_dl_v, col_preview_v = st.columns([1, 3])
     with col_dl_v:
-        st.download_button(
-            "💾 Baixar CSV Vagas (Completo)",
-            data=vagas_full.to_csv(index=False).encode("utf-8"),
-            file_name="vagas_completo.csv",
-            mime="text/csv",
-            key="dl_vagas"
-        )
-    with col_met_v:
-        st.metric("Total Vagas", len(vagas_full))
+        st.download_button("💾 Baixar CSV (Completo)", data=vagas_full.to_csv(index=False).encode("utf-8"), file_name="vagas_completo.csv", mime="text/csv", key="dl_vagas")
+    with col_preview_v:
+        st.dataframe(_preview_df(vagas_full, text_cols=["vaga_text"]), use_container_width=True, hide_index=True)
 
 # Footer
 st.sidebar.divider()
 st.sidebar.caption(f"""
     Desenvolvido para Especialização.
-    **Modelo (SBERT):** Carregado da pasta **{MODEL_DIR}** no seu repositório.
-    **Dados (CSV):** Prioriza URL (Variáveis de Ambiente) > Disco Local > Amostra.
+    Modelo (SBERT): Carregado da pasta **{MODEL_DIR}**.
+    Embeddings: Prioriza URL RAW > Disco Local.
 """)

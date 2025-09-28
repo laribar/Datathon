@@ -321,7 +321,7 @@ def embed_texts(texts: List[str], model_path: str) -> np.ndarray:
     # Aplica a limpeza antes de embedar
     texts = [clean_text(t) for t in texts] 
     # **IMPORTANTE**: Normaliza os embeddings
-    return model.encode(texts, normalize_embeddings=True, show_progress_bar=False, convert_to_numpy=True)
+    return model.encode(texts, normalize_embeddings=True, show_progress_bar=True, convert_to_numpy=True)
 
 @st.cache_data(show_spinner="Gerando embedding...", ttl=3600, max_entries=20)
 def embed_text(text: str, model_path: str) -> np.ndarray:
@@ -329,7 +329,7 @@ def embed_text(text: str, model_path: str) -> np.ndarray:
     model = load_model(model_path)
     text_clean = clean_text(text)
     # **IMPORTANTE**: Normaliza os embeddings
-    emb = model.encode(text_clean, normalize_embeddings=True, show_progress_bar=False, convert_to_numpy=True)
+    emb = model.encode(text_clean, normalize_embeddings=True, show_progress_bar=True, convert_to_numpy=True)
     return emb.flatten()
 
 def generate_xgb_features(vaga_emb: np.ndarray, cv_embs: np.ndarray) -> np.ndarray:

@@ -100,7 +100,7 @@ DATATHON/
 
 ### 1. Clonar o repositório
 ```bash
-git clone https://github.com/seu-repo/datathon.git
+git clone https://github.com/laribar/datathon.git
 cd datathon
 
 2. Criar ambiente virtual

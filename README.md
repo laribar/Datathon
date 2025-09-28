@@ -41,7 +41,7 @@ DATATHON/
 │
 ├── notebooks/                   # Notebooks de exploração
 │   ├── Datathon.ipynb    #notebook que faz pré processamnento / feature engineering / treinamento /validação
-│   └── 01_exploracao_dados.ipynb
+│   
 │
 ├── utils/                       # Scripts auxiliares
 │   ├── json_to_csv_prospects.py
@@ -69,19 +69,16 @@ DATATHON/
    - Conversão JSON → CSV (`json_to_csv_*`).  
    - Limpeza e padronização de texto (`transformar.py`).  
 
-3. **🔎 Exploração de Dados**  
-   - `01_exploracao_dados.ipynb` → análise inicial de skills, vagas e distribuição.  
-
-4. **🧠 Modelagem**  
+3. **🧠 Modelagem**  
    - **SBERT Encoder** → embeddings de CVs e vagas.  
    - **XGBoost** → classificador de compatibilidade.  
-   - Treinamento automatizado (`treinamento_modelo_match.py`).  
+   - Treinamento automatizado (`Datathon.ipynb`).  
 
-5. **🖥️ Interface**  
+4. **🖥️ Interface**  
    - **Streamlit (`streamlit_app.py`)** → upload de CVs/vagas, visualização de matches.  
    - **FastAPI (`main.py`)** → rotas `/match` e `/batch_match`.  
 
-6. **☁️ Deploy**  
+5. **☁️ Deploy**  
    - Configurado no **Render** via `render.yaml` e `runtime.txt`.  
 
 ---

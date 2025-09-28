@@ -1,580 +1,432 @@
-# === STREAMLIT APP: Match CV × Vaga (FastAPI client) ===
-# Requisitos: streamlit, requests, pandas
-# Rodar: streamlit run app/streamlit_app.py
+# streamlit_app.py — App Streamlit 100% sem FastAPI (match CV × Vaga com SBERT)
+# ---------------------------------------------------------------
+# Requisitos (requirements.txt)
+# streamlit
+# sentence-transformers
+# numpy
+# pandas
+# scikit-learn  # (opcional; não usamos diretamente aqui)
+# ---------------------------------------------------------------
 
 import os
-import json
-import time
-import requests
+import io
+import re
+import itertools
+from typing import List, Tuple
+
+import numpy as np
 import pandas as pd
 import streamlit as st
+from sentence_transformers import SentenceTransformer
 
-# -----------------------------
-# Config
-# -----------------------------
-st.set_page_config(page_title="Match CV × Vaga", layout="wide")
-DEFAULT_API_URL = os.getenv("MATCH_API_URL", "http://127.0.0.1:8000/")
+# ======================== CONFIG ========================
+APP_NAME = "SkillAI Match"
+APP_VERSION = "1.0.0"
+DEFAULT_LIMIAR = float(os.getenv("SCORE_LIMIAR", "0.75"))
+MODEL_DIR = os.getenv("MODEL_DIR", os.path.join("models", "sbert_encoder"))
+MODEL_NAME = os.getenv("MODEL_NAME", f"local:{MODEL_DIR}")
 
-# -----------------------------
-# Helpers (substituir os seus por estes)
-# -----------------------------
-import gc
-from io import BytesIO
+# Caminhos para bases iniciais (se existirem, o app já sobe carregando-as)
+BASE_CANDIDATOS_PATH = os.getenv("BASE_CANDIDATOS_PATH", "data/applicants_clean.csv")
+BASE_VAGAS_PATH = os.getenv("BASE_VAGAS_PATH", "data/vagas_clean.csv")
 
-def api_get(api_url: str, path: str, timeout=30):
-    url = f"{api_url}{path}"
-    r = requests.get(url, timeout=timeout)
-    r.raise_for_status()
-    return r.json()
+# ======================== UTILS ========================
+_whitespace_re = re.compile(r"\s+")
+_SENT_SPLIT_RE = re.compile(r"(?<=[\.!?;:]|\n)\s+")
 
-def api_post(api_url: str, path: str, payload: dict, timeout=120):
-    url = f"{api_url}{path}"
-    headers = {"Content-Type": "application/json"}
-    r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=timeout)
-    r.raise_for_status()
-    return r.json()
+
+def clean_text(text: str) -> str:
+    if text is None:
+        return ""
+    text = text.strip().lower()
+    text = _whitespace_re.sub(" ", text)
+    return text
+
+
+def proportional_score(similarity: float, limiar: float) -> float:
+    if similarity >= limiar:
+        return 100.0
+    return max(0.0, (similarity / limiar) * 100.0)
+
+
+def split_sentences(text: str, min_chars: int = 25) -> List[str]:
+    if not text:
+        return []
+    t = clean_text(text)
+    parts = [p.strip() for p in _SENT_SPLIT_RE.split(t) if p and p.strip()]
+    parts = [p for p in parts if len(p) >= min_chars]
+    return parts if parts else [t]
+
+
+def top_n_pairs_by_cosine(A: List[str], B: List[str], encoder: "SentenceTransformer", top_n: int = 3) -> List[Tuple[int, int, float]]:
+    if not A or not B:
+        return []
+    A_vecs = encoder.encode(A, normalize_embeddings=True, show_progress_bar=False)
+    B_vecs = encoder.encode(B, normalize_embeddings=True, show_progress_bar=False)
+    pairs = []
+    for i, j in itertools.product(range(len(A)), range(len(B))):
+        sim = float(np.dot(A_vecs[i], B_vecs[j]))  # dot == cosine por normalização
+        pairs.append((i, j, sim))
+    pairs.sort(key=lambda x: x[2], reverse=True)
+    return pairs[: max(1, top_n)]
+
+
+# ======================== CACHES ========================
+@st.cache_resource(show_spinner=False)
+def load_model(model_dir: str) -> SentenceTransformer:
+    return SentenceTransformer(model_dir)
+
 
 @st.cache_data(show_spinner=False)
-def check_health_cached(api_url: str):
-    try:
-        return api_get(api_url, "/health")
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
+def embed_texts(texts: List[str], model_dir: str) -> np.ndarray:
+    model = load_model(model_dir)
+    return model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
 
-def color_score(score: float) -> str:
-    if score >= 90: return "✅"
-    if score >= 75: return "🟨"
-    return "❌"
 
-def highlight_snippet(snippet: str) -> str:
-    return f"<span style='background-color:#1f6feb22;padding:2px 4px;border-radius:4px'>{snippet}</span>"
-
-def concat_cols(df: pd.DataFrame, cols: list) -> pd.Series:
-    if not cols:
-        return pd.Series([""] * len(df))
-    # Evita criar Series intermediárias gigantes
-    return pd.Series((" ".join(map(str, row))) for row in df[cols].itertuples(index=False, name=None))
-
-# ---- Novos helpers de leitura com memória otimizada ----
 @st.cache_data(show_spinner=False)
-def load_csv_bytes_cached(file_bytes: bytes, use_chunks: bool = False, sep: str = ",") -> pd.DataFrame:
-    """
-    Lê CSV a partir de bytes. Se use_chunks=True, faz append por chunks (menos memória de pico).
-    """
-    bio = BytesIO(file_bytes)
-    if not use_chunks:
-        df = pd.read_csv(bio, sep=sep, dtype_backend="pyarrow", low_memory=False)
-        return df
-    # Chunks (ajuda quando muito grande)
-    bio.seek(0)
-    chunks = pd.read_csv(bio, sep=sep, chunksize=100_000, dtype_backend="pyarrow", low_memory=True)
-    df = pd.concat(chunks, ignore_index=True)
-    return df
+def embed_text(text: str, model_dir: str) -> np.ndarray:
+    model = load_model(model_dir)
+    return model.encode(text, normalize_embeddings=True, show_progress_bar=False)
 
-def uploaded_to_bytes(uploaded_file) -> bytes:
-    """
-    Converte UploadedFile para bytes e solta referência ao objeto do widget (reduz deepcopies).
-    """
-    if uploaded_file is None:
-        return b""
-    data = uploaded_file.getbuffer().tobytes()
-    return data
 
-# -----------------------------
-# Sidebar
-# -----------------------------
-st.sidebar.title("⚙️ Configuração")
-st.sidebar.write("Defina o endpoint da API (FastAPI).")
+# ======================== LAYOUT ========================
+st.set_page_config(page_title=f"{APP_NAME}", layout="wide")
 
-API_URL = st.sidebar.text_input(
-    "MATCH_API_URL", value=DEFAULT_API_URL, help="Ex.: http://127.0.0.1:8000"
-).strip()
+with st.sidebar:
+    st.markdown(f"### {APP_NAME}")
+    st.caption(f"Versão {APP_VERSION}")
+    st.write("**Encoder:**", MODEL_NAME)
+    limiar = st.slider("Limiar de aprovação (cosine)", 0.50, 0.95, DEFAULT_LIMIAR, 0.01)
+    st.divider()
+    st.markdown("#### Bases iniciais (auto-carregadas se existirem)")
+    st.code(f"Candidatos: {BASE_CANDIDATOS_PATH}\nVagas: {BASE_VAGAS_PATH}")
 
-st.sidebar.divider()
-st.sidebar.caption("Dica: defina MATCH_API_URL como variável de ambiente para não precisar editar aqui.")
+st.title("🔎 Match CV × Vaga (SBERT, sem FastAPI)")
 
-# -----------------------------
-# Header
-# -----------------------------
-st.title("🧠 Match CV × Vaga — Streamlit UI")
+# ============ Carrega bases FIXAS e gera cv_text/vaga_text a partir de TODAS as colunas ============
+@st.cache_data(show_spinner=False)
+def _concat_all_columns(df: pd.DataFrame, target_col: str) -> pd.DataFrame:
+    # Preserva o DF original e cria a coluna alvo concatenando **todas** as colunas como texto
+    out = df.copy()
+    if target_col in out.columns:
+        out = out.drop(columns=[target_col])  # vamos recomputar
+    # Converte NaN -> "" e tudo para string, mantendo ordem das colunas
+    s = out.fillna("").astype(str)
+    out[target_col] = s.apply(lambda row: " ".join([v for v in row.values if v != ""]).strip(), axis=1)
+    return out
 
-health = check_health_cached(API_URL)
-cols = st.columns(3)
-with cols[0]:
-    st.metric("API status", health.get("status", "desconhecido"))
-with cols[1]:
-    st.metric("Modelo", health.get("model_name", "—"))
-with cols[2]:
-    st.metric("Endpoint", API_URL)
+@st.cache_data(show_spinner=False)
+def load_fixed_bases() -> Tuple[pd.DataFrame, pd.DataFrame]:
+    # Lê os CSVs obrigatórios e sempre constrói cv_text e vaga_text concatenando todas as colunas
+    cand_raw = pd.read_csv(BASE_CANDIDATOS_PATH)
+    vagas_raw = pd.read_csv(BASE_VAGAS_PATH)
+    cand_df = _concat_all_columns(cand_raw, "cv_text")
+    vagas_df = _concat_all_columns(vagas_raw, "vaga_text")
+    return cand_df, vagas_df
 
-if health.get("status") != "ok":
-    st.error("Não consegui falar com a API. Verifique se o FastAPI está rodando (uvicorn) e a URL na barra lateral.")
-    st.stop()
+candidatos_df, vagas_df = load_fixed_bases()
 
-st.markdown("---")
+# Sessão: mantém as bases atuais (podem ser trocadas por upload)
+if "candidatos_df" not in st.session_state:
+    st.session_state["candidatos_df"] = candidatos_df.copy()
+if "vagas_df" not in st.session_state:
+    st.session_state["vagas_df"] = vagas_df.copy()
 
-# =========================================================
-# Base compartilhada (upload persistente em sessão) — REESCRITO
-# =========================================================
-st.header("📦 Base (Upload de CSVs)")
-st.caption("Envie seus CSVs de **Currículos** e **Vagas** uma única vez. Eles ficarão disponíveis para o tab **🏅 Ranking por Vaga**.")
 
-# Estados leves na sessão
-if "df_cvs" not in st.session_state: st.session_state.df_cvs = None
-if "df_vagas" not in st.session_state: st.session_state.df_vagas = None
-if "cv_cols_sel" not in st.session_state: st.session_state.cv_cols_sel = []
-if "vaga_cols_sel" not in st.session_state: st.session_state.vaga_cols_sel = []
-
-c_up1, c_up2 = st.columns(2)
-with c_up1:
-    cvs_file_base = st.file_uploader(
-        "Carregar CSV de Currículos (Base)", type=["csv"], key="cvs_base",
-        help="Para arquivos muito grandes, marque a opção de chunks abaixo."
-    )
-with c_up2:
-    vagas_file_base = st.file_uploader(
-        "Carregar CSV de Vagas (Base)", type=["csv"], key="vagas_base",
-        help="Para arquivos muito grandes, marque a opção de chunks abaixo."
-    )
-
-use_chunks = st.checkbox("Ler usando chunks (para CSVs muito grandes)", value=False)
-csv_sep = st.text_input("Separador CSV", value=",", help="Use ';' se seu CSV estiver em pt-BR com ponto e vírgula.")
-
-# Botões explícitos evitam múltiplas releituras durante o rerun
-c_btn1, c_btn2 = st.columns(2)
-with c_btn1:
-    if st.button("📥 Processar CSV de Currículos"):
-        if cvs_file_base is None:
-            st.warning("Envie primeiro o arquivo de Currículos.")
-        else:
-            try:
-                cv_bytes = uploaded_to_bytes(cvs_file_base)
-                st.session_state.df_cvs = load_csv_bytes_cached(cv_bytes, use_chunks=use_chunks, sep=csv_sep)
-                del cv_bytes; gc.collect()
-                st.success(f"CVs carregados: {st.session_state.df_cvs.shape[0]} linhas, {st.session_state.df_cvs.shape[1]} colunas.")
-                st.dataframe(st.session_state.df_cvs.head(10), use_container_width=True)
-            except MemoryError:
-                st.error("Faltou memória ao ler Currículos. Ative 'Ler usando chunks' ou reduza o arquivo.")
-            except Exception as e:
-                st.error(f"Erro ao ler CSV de Currículos: {e}")
-
-with c_btn2:
-    if st.button("📥 Processar CSV de Vagas"):
-        if vagas_file_base is None:
-            st.warning("Envie primeiro o arquivo de Vagas.")
-        else:
-            try:
-                vaga_bytes = uploaded_to_bytes(vagas_file_base)
-                st.session_state.df_vagas = load_csv_bytes_cached(vaga_bytes, use_chunks=use_chunks, sep=csv_sep)
-                del vaga_bytes; gc.collect()
-                st.success(f"Vagas carregadas: {st.session_state.df_vagas.shape[0]} linhas, {st.session_state.df_vagas.shape[1]} colunas.")
-                st.dataframe(st.session_state.df_vagas.head(10), use_container_width=True)
-            except MemoryError:
-                st.error("Faltou memória ao ler Vagas. Ative 'Ler usando chunks' ou reduza o arquivo.")
-            except Exception as e:
-                st.error(f"Erro ao ler CSV de Vagas: {e}")
-
-# Config colunas só aparece se ambos foram processados
-if (st.session_state.df_cvs is not None) and (st.session_state.df_vagas is not None):
-    st.write("### Configurar Colunas para Concatenação")
-    c_conf1, c_conf2 = st.columns(2)
-    with c_conf1:
-        st.session_state.cv_cols_sel = st.multiselect(
-            "Colunas do CSV de Currículos (texto do CV)",
-            st.session_state.df_cvs.columns.tolist(),
-            default=[c for c in st.session_state.df_cvs.columns if "curriculo" in c.lower() or "cv" in c.lower() or c.lower() == "curriculo_pt"],
-            help="Essas colunas serão concatenadas para formar o texto do currículo."
-        )
-    with c_conf2:
-        st.session_state.vaga_cols_sel = st.multiselect(
-            "Colunas do CSV de Vagas (texto da Vaga)",
-            st.session_state.df_vagas.columns.tolist(),
-            default=[c for c in st.session_state.df_vagas.columns if ("vaga" in c.lower() or "descri" in c.lower() or "titulo" in c.lower())],
-            help="Essas colunas serão concatenadas para formar o texto da vaga."
-        )
-
-st.markdown("---")
-
-# -----------------------------
-# Tabs
-# -----------------------------
-tab1, tab2, tab3, tab4 = st.tabs([
-    "🔍 Match Único",
-    "📚 Match em Lote (CSV)",
-    "🔎 Explain (Top-N trechos)",
-    "🏅 Ranking por Vaga"
+# ======================== TABS ========================
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "1×1 (Texto)",
+    "Batch (2 uploads)",
+    "Batch (CSV pareado)",
+    "Explain (trechos)",
+    "Ranking por vaga",
+    "Bases atuais",
 ])
 
-# ========== TAB 1: SINGLE ==========
+# -------- TAB 1: Match 1×1 --------
 with tab1:
-    st.subheader("🔍 Match Único")
-    st.caption("Calcule o percentual de match entre um CV e uma Vaga. Ao calcular, exibimos automaticamente as sentenças mais próximas (Explain).")
-
-    c1, c2 = st.columns(2)
-    with c1:
-        cv_text = st.text_area("Currículo (texto)", height=240, placeholder="Cole aqui o texto do currículo...")
-    with c2:
-        vaga_text = st.text_area("Vaga (texto)", height=240, placeholder="Cole aqui o texto da vaga...")
+    st.subheader("Match 1×1 — cole textos (sem FastAPI)")
+    colA, colB = st.columns(2)
+    with colA:
+        cv_text = st.text_area("CV — texto puro", height=220, placeholder="Cole o CV aqui…")
+    with colB:
+        vaga_text = st.text_area("Vaga — texto puro", height=220, placeholder="Cole a descrição da vaga aqui…")
 
     clean = st.checkbox("Aplicar limpeza básica (lower + normalização de espaços)", value=True)
-
-    with st.expander("Opções de Explain (automático no Match Único)"):
-        top_n_single_exp = st.number_input("Top-N pares de sentenças", min_value=1, max_value=10, value=3, step=1, key="top_n_single_exp")
-        min_chars_single_exp = st.number_input("Mínimo de caracteres por sentença", min_value=1, max_value=500, value=25, step=1, key="min_chars_single_exp")
-
-    run_single = st.button("Calcular Match", type="primary")
-
-    if run_single:
-        if not cv_text.strip() or not vaga_text.strip():
-            st.warning("Preencha ambos os campos: Currículo e Vaga.")
+    if st.button("Calcular Similaridade"):
+        if not cv_text or not vaga_text:
+            st.warning("Informe CV e Vaga.")
         else:
-            # 1) Match
-            with st.spinner("Calculando match..."):
-                payload = {"cv_text": cv_text, "vaga_text": vaga_text, "clean": clean}
-                try:
-                    r = api_post(API_URL, "/match", payload)
-                    s1, s2, s3, s4 = st.columns(4)
-                    s1.metric("Similarity (0..1)", f"{r['similarity']:.4f}")
-                    s2.metric("Score (%)", f"{r['score']:.2f} {color_score(r['score'])}")
-                    s3.metric("Limiar", f"{r['limiar_usado']:.2f}")
-                    s4.metric("Aprovou limiar?", "✅ Sim" if r["passed_threshold"] else "❌ Não")
+            cv_raw = clean_text(cv_text) if clean else cv_text
+            vaga_raw = clean_text(vaga_text) if clean else vaga_text
+            cv_vec = embed_text(cv_raw, MODEL_DIR)
+            vaga_vec = embed_text(vaga_raw, MODEL_DIR)
+            sim = float(np.dot(cv_vec, vaga_vec))  # embeddings normalizados
+            score = proportional_score(sim, limiar)
+            passed = sim >= limiar
 
-                    st.success(f"Modelo: `{r['model_name']}`")
-                    with st.expander("Resposta bruta da API (/match)"):
-                        st.json(r)
-                except Exception as e:
-                    st.error(f"Erro na requisição /match: {e}")
-                    st.stop()
+            st.metric("Similaridade (cosine)", f"{sim:.4f}")
+            st.metric("Score (%)", f"{score:.2f}")
+            st.write("**Aprovado pelo limiar?**", "✅ Sim" if passed else "❌ Não")
 
-            # 2) Explain automático
-            try:
-                with st.spinner("Gerando Explain (Top-N trechos semelhantes)..."):
-                    exp_payload = {
-                        "cv_text": cv_text,
-                        "vaga_text": vaga_text,
-                        "clean": clean,
-                        "top_n": int(top_n_single_exp),
-                        "min_chars": int(min_chars_single_exp),
-                    }
-                    rex = api_post(API_URL, "/match/explain", exp_payload)
-
-                st.markdown("### 🔎 Explain — Top pares de sentenças")
-                e1, e2 = st.columns(2)
-                with e1:
-                    st.metric("Overall Similarity", f"{rex['overall_similarity']:/.4f}")
-                with e2:
-                    st.metric("Overall Score (%)", f"{rex['overall_score']:.2f} {color_score(rex['overall_score'])}")
-
-                exp_rows = []
-                for item in rex["top_pairs"]:
-                    exp_rows.append({
-                        "rank": item["rank"],
-                        "similarity": item["similarity"],
-                        "cv_index": item["cv_index"],
-                        "vaga_index": item["vaga_index"],
-                        "cv_snippet": item["cv_snippet"],
-                        "vaga_snippet": item["vaga_snippet"],
-                    })
-                df_exp_single = pd.DataFrame(exp_rows)
-                st.dataframe(df_exp_single, use_container_width=True)
-
-                st.write("#### Destaques (preview)")
-                for item in rex["top_pairs"]:
-                    st.markdown(
-                        f"**#{item['rank']}** — sim: `{item['similarity']:.4f}`  \n"
-                        f"CV: {highlight_snippet(item['cv_snippet'])}  \n"
-                        f"Vaga: {highlight_snippet(item['vaga_snippet'])}",
-                        unsafe_allow_html=True
-                    )
-
-                st.info(f"Explain gerado com `top_n={int(top_n_single_exp)}` e `min_chars={int(min_chars_single_exp)}` — Modelo: `{rex['model_name']}` | Limiar: `{rex['limiar_usado']}`")
-            except Exception as e:
-                st.warning(f"Não foi possível gerar o Explain automático: {e}")
-
-# ========== TAB 2: BATCH CSV (CVs × Vagas com Top-N) ==========
+# -------- TAB 2: Batch (2 uploads) --------
 with tab2:
-    st.subheader("📚 Match em Lote (CVs × Vagas)")
-    st.caption(
-        "Carregue dois CSVs: um de Currículos e outro de Vagas. "
-        "Escolha quais colunas compõem o texto de cada lado. "
-        "O app gera o cruzamento e mostra o **Top-N** por CV (ou por Vaga)."
+    st.subheader("Batch — subir **candidatos** e **vagas** separadamente")
+    st.caption("Arquivos CSV com colunas: **cv_text** (candidatos) e **vaga_text** (vagas). ")
+
+    up_cand = st.file_uploader("CSV de candidatos (cv_text)", type=["csv"], key="u1")
+    up_vaga = st.file_uploader("CSV de vagas (vaga_text)", type=["csv"], key="u2")
+    top_k = st.number_input("Top K por candidato", 1, 50, 5)
+    clean_batch = st.checkbox("Aplicar limpeza básica nos textos", True)
+
+    if st.button("Processar Batch (2 uploads)"):
+        if up_cand is not None:
+            candidatos_df = pd.read_csv(up_cand)
+        if up_vaga is not None:
+            vagas_df = pd.read_csv(up_vaga)
+
+        # Persistir na sessão
+        st.session_state["candidatos_df"] = candidatos_df.copy()
+        st.session_state["vagas_df"] = vagas_df.copy()
+
+        if "cv_text" not in candidatos_df.columns or "vaga_text" not in vagas_df.columns:
+            st.error("Colunas obrigatórias ausentes. Esperado: cv_text em candidatos, vaga_text em vagas.")
+        else:
+            cvs = [clean_text(x) if clean_batch else x for x in candidatos_df["cv_text"].astype(str).tolist()]
+            vagas = [clean_text(x) if clean_batch else x for x in vagas_df["vaga_text"].astype(str).tolist()]
+
+            # Embeddings
+            emb_cvs = embed_texts(cvs, MODEL_DIR)
+            emb_vagas = embed_texts(vagas, MODEL_DIR)
+
+            # Matriz de similaridade via produto interno (cosine)
+            sim_matrix = np.matmul(emb_cvs, emb_vagas.T)
+
+            # Para cada CV, pegar Top K vagas
+            rows = []
+            for i, cv_row in enumerate(candidatos_df.itertuples(index=False)):
+                sims = sim_matrix[i]
+                top_idx = np.argsort(-sims)[:top_k]
+                for rank, j in enumerate(top_idx, start=1):
+                    sim = float(sims[j])
+                    rows.append(
+                        {
+                            "cv_index": i,
+                            "vaga_index": int(j),
+                            "rank": rank,
+                            "similaridade": round(sim, 6),
+                            "score": round(proportional_score(sim, limiar), 2),
+                            "aprovado": bool(sim >= limiar),
+                        }
+                    )
+            out_df = pd.DataFrame(rows)
+            st.dataframe(out_df, use_container_width=True, hide_index=True)
+
+            # Download
+            csv = out_df.to_csv(index=False).encode("utf-8")
+            st.download_button("Baixar resultados (CSV)", data=csv, file_name="matches_topk.csv", mime="text/csv")
+
+# -------- TAB 3: Batch (CSV pareado) --------
+with tab3:
+    st.subheader("Batch — um único CSV **pareado** (cv_text, vaga_text)")
+    st.caption("Envie um CSV contendo **cv_text** e **vaga_text** por linha.")
+
+    sample = pd.DataFrame({
+        "cv_text": ["Engenheiro de dados com Spark e Airflow."],
+        "vaga_text": ["Procuramos Engenheiro de Dados com Airflow e Spark."],
+    })
+    st.download_button(
+        "Baixar template CSV",
+        sample.to_csv(index=False).encode("utf-8"),
+        file_name="template_batch.csv",
+        mime="text/csv",
     )
 
-    cvs_file = st.file_uploader("Carregar CSV de Currículos (Lote)", type=["csv"], key="cvs")
-    vagas_file = st.file_uploader("Carregar CSV de Vagas (Lote)", type=["csv"], key="vagas")
+    up_batch = st.file_uploader("Carregar CSV pareado", type=["csv"], key="u3")
+    clean_paired = st.checkbox("Aplicar limpeza básica", True)
 
-    clean_batch = st.checkbox("Aplicar limpeza básica", value=True, key="clean_batch")
-
-    c1, c2 = st.columns([1, 1])
-    with c1:
-        top_n = st.number_input("Top-N resultados", min_value=1, max_value=50, value=5, step=1)
-    with c2:
-        rank_mode = st.radio(
-            "Modo de ranking",
-            options=["Top-N por CV", "Top-N por Vaga"],
-            index=0,
-            horizontal=True,
-        )
-
-    if cvs_file is not None and vagas_file is not None:
-        try:
-            df_cvs = pd.read_csv(cvs_file)
-            df_vagas = pd.read_csv(vagas_file)
-
-            st.write("### Amostra de Currículos")
-            st.dataframe(df_cvs.head(10), use_container_width=True)
-            st.write("### Amostra de Vagas")
-            st.dataframe(df_vagas.head(10), use_container_width=True)
-
-            st.write("### Configuração das colunas para concatenação")
-            cv_cols = st.multiselect(
-                "Colunas do CSV de Currículos",
-                df_cvs.columns.tolist(),
-                default=[c for c in df_cvs.columns if "curriculo" in c.lower() or "cv" in c.lower() or c.lower() == "curriculo_pt"],
-                help="Essas colunas serão concatenadas para formar o texto do currículo."
-            )
-            vaga_cols = st.multiselect(
-                "Colunas do CSV de Vagas",
-                df_vagas.columns.tolist(),
-                default=[c for c in df_vagas.columns if ("vaga" in c.lower() or "descri" in c.lower() or "titulo" in c.lower())],
-                help="Essas colunas serão concatenadas para formar o texto da vaga."
-            )
-
-            if st.button("Gerar Matches", type="primary"):
-                if not cv_cols or not vaga_cols:
-                    st.error("Selecione pelo menos uma coluna em **cada** dataset.")
-                else:
-                    with st.spinner("Calculando matches..."):
-                        df_cvs["_texto_cv"] = concat_cols(df_cvs, cv_cols)
-                        df_vagas["_texto_vaga"] = concat_cols(df_vagas, vaga_cols)
-
-                        cv_id_col = "id" if "id" in df_cvs.columns else None
-                        cv_nome_col = "nome" if "nome" in df_cvs.columns else None
-                        vaga_id_col = "id" if "id" in df_vagas.columns else None
-                        vaga_titulo_col = "titulo_vaga" if "titulo_vaga" in df_vagas.columns else None
-
-                        pairs, index_map = [], []
-                        for i, cv_row in df_cvs.iterrows():
-                            for j, vaga_row in df_vagas.iterrows():
-                                pairs.append({
-                                    "cv_text": cv_row["_texto_cv"],
-                                    "vaga_text": vaga_row["_texto_vaga"],
-                                })
-                                index_map.append((i, j))
-
-                        payload = {"pairs": pairs, "clean": clean_batch}
-
-                        t0 = time.time()
-                        r = api_post(API_URL, "/match/batch", payload)
-                        elapsed = time.time() - t0
-
-                    records = []
-                    for k, item in enumerate(r["results"]):
-                        i, j = index_map[k]
-                        cv_row = df_cvs.loc[i]
-                        vaga_row = df_vagas.loc[j]
-                        records.append({
-                            "id_cv": cv_row[cv_id_col] if cv_id_col else i,
-                            "nome_cv": cv_row[cv_nome_col] if cv_nome_col else "",
-                            "id_vaga": vaga_row[vaga_id_col] if vaga_id_col else j,
-                            "titulo_vaga": vaga_row[vaga_titulo_col] if vaga_titulo_col else "",
-                            "similarity": item["similarity"],
-                            "score": item["score"],
-                            "passed_threshold": item["passed_threshold"],
-                        })
-                    df_all = pd.DataFrame(records)
-
-                    if rank_mode == "Top-N por CV":
-                        df_ranked = (
-                            df_all.sort_values(["id_cv", "score"], ascending=[True, False])
-                                 .groupby("id_cv", as_index=False).head(int(top_n))
-                                 .sort_values(["id_cv", "score"], ascending=[True, False])
-                        )
-                        st.success(
-                            f"Processado {len(df_all)} combinações em {elapsed:.2f}s — exibindo Top-{int(top_n)} **por CV**. "
-                            f"Modelo: {r['model_name']}"
-                        )
-                    else:
-                        df_ranked = (
-                            df_all.sort_values(["id_vaga", "score"], ascending=[True, False])
-                                 .groupby("id_vaga", as_index=False).head(int(top_n))
-                                 .sort_values(["id_vaga", "score"], ascending=[True, False])
-                        )
-                        st.success(
-                            f"Processado {len(df_all)} combinações em {elapsed:.2f}s — exibindo Top-{int(top_n)} **por Vaga**. "
-                            f"Modelo: {r['model_name']}"
-                        )
-
-                    st.dataframe(df_ranked, use_container_width=True)
-                    st.download_button(
-                        "Baixar resultados (CSV)",
-                        df_ranked.to_csv(index=False).encode("utf-8"),
-                        file_name="resultados_match_topN.csv",
-                        mime="text/csv"
-                    )
-
-        except Exception as e:
-            st.error(f"Erro ao processar os CSVs: {e}")
-
-# ========== TAB 3: EXPLAIN ==========
-with tab3:
-    st.subheader("🔎 Explain (Top-N trechos)")
-    st.caption("Mostra as sentenças de CV e Vaga mais semelhantes, além do score geral.")
-
-    c1, c2 = st.columns(2)
-    with c1:
-        cv_text_ex = st.text_area("Currículo (texto)", height=220, key="cv_explain", placeholder="Cole aqui o texto do currículo...")
-    with c2:
-        vaga_text_ex = st.text_area("Vaga (texto)", height=220, key="vaga_explain", placeholder="Cole aqui o texto da vaga...")
-
-    c3, c4, c5 = st.columns(3)
-    with c3:
-        top_n_explain_tab = st.number_input("Top-N pares de sentenças", min_value=1, max_value=10, value=3, step=1, key="top_n_explain_tab")
-    with c4:
-        min_chars_explain_tab = st.number_input("Mínimo de caracteres por sentença", min_value=1, max_value=500, value=25, step=1, key="min_chars_explain_tab")
-    with c5:
-        clean_explain = st.checkbox("Aplicar limpeza básica", value=True, key="clean_explain")
-
-    if st.button("Gerar Explain", type="primary"):
-        if not cv_text_ex.strip() or not vaga_text_ex.strip():
-            st.warning("Preencha ambos os campos: Currículo e Vaga.")
+    if up_batch is not None:
+        batch_df = pd.read_csv(up_batch)
+        if not {"cv_text", "vaga_text"}.issubset(batch_df.columns):
+            st.error("CSV deve conter colunas cv_text e vaga_text.")
         else:
-            with st.spinner("Calculando explain..."):
-                payload = {
-                    "cv_text": cv_text_ex,
-                    "vaga_text": vaga_text_ex,
-                    "clean": clean_explain,
-                    "top_n": int(top_n_explain_tab),
-                    "min_chars": int(min_chars_explain_tab),
-                }
-                try:
-                    r = api_post(API_URL, "/match/explain", payload)
+            cvs = [clean_text(x) if clean_paired else x for x in batch_df["cv_text"].astype(str).tolist()]
+            vagas = [clean_text(x) if clean_paired else x for x in batch_df["vaga_text"].astype(str).tolist()]
 
-                    s1, s2 = st.columns(2)
-                    with s1:
-                        st.metric("Overall Similarity", f"{r['overall_similarity']:.4f}")
-                    with s2:
-                        st.metric("Overall Score (%)", f"{r['overall_score']:.2f} {color_score(r['overall_score'])}")
+            emb_cvs = embed_texts(cvs, MODEL_DIR)
+            emb_vagas = embed_texts(vagas, MODEL_DIR)
+            sims = np.sum(emb_cvs * emb_vagas, axis=1)  # dot por linha
 
-                    st.write("### Top pares de sentenças")
-                    exp_rows = []
-                    for item in r["top_pairs"]:
-                        exp_rows.append({
-                            "rank": item["rank"],
-                            "similarity": item["similarity"],
-                            "cv_index": item["cv_index"],
-                            "vaga_index": item["vaga_index"],
-                            "cv_snippet": item["cv_snippet"],
-                            "vaga_snippet": item["vaga_snippet"],
-                        })
-                    df_exp = pd.DataFrame(exp_rows)
-                    st.dataframe(df_exp, use_container_width=True)
+            batch_df_out = batch_df.copy()
+            batch_df_out["similaridade"] = sims
+            batch_df_out["score"] = [proportional_score(x, limiar) for x in sims]
+            batch_df_out["aprovado"] = batch_df_out["similaridade"] >= limiar
 
-                    st.write("#### Destaques (preview)")
-                    for item in r["top_pairs"]:
-                        st.markdown(
-                            f"**#{item['rank']}** — sim: `{item['similarity']:.4f}`  \n"
-                            f"CV: {highlight_snippet(item['cv_snippet'])}  \n"
-                            f"Vaga: {highlight_snippet(item['vaga_snippet'])}",
-                            unsafe_allow_html=True
-                        )
+            st.dataframe(batch_df_out, use_container_width=True, hide_index=True)
+            st.download_button(
+                "Baixar resultados (CSV)",
+                data=batch_df_out.to_csv(index=False).encode("utf-8"),
+                file_name="matches_pareado.csv",
+                mime="text/csv",
+            )
 
-                    st.success(f"Modelo: `{r['model_name']}` — Limiar: `{r['limiar_usado']}`")
-
-                except Exception as e:
-                    st.error(f"Erro na requisição: {e}")
-
-# ========== TAB 4: RANKING POR VAGA ==========
+# -------- TAB 4: Explain --------
 with tab4:
-    st.subheader("🏅 Ranking por Vaga")
-    st.caption("Use a **Base** carregada acima. Escolha **uma vaga** e gere o **ranking de candidatos** (Top-N) dessa vaga.")
+    st.subheader("Explain — Top trechos CV × Vaga")
+    col1, col2 = st.columns(2)
+    with col1:
+        cv_t = st.text_area("CV — texto puro", height=220)
+    with col2:
+        vaga_t = st.text_area("Vaga — texto puro", height=220)
 
-    if (st.session_state.df_cvs is None) or (st.session_state.df_vagas is None):
-        st.warning("Envie primeiro os CSVs na seção **📦 Base (Upload de CSVs)** acima.")
-        st.stop()
+    top_n = st.number_input("Top N pares de trechos", 1, 10, 3)
+    min_chars = st.number_input("Mínimo de caracteres por sentença", 10, 500, 25)
+    clean_e = st.checkbox("Limpar textos", True)
 
-    clean_rank = st.checkbox("Aplicar limpeza básica", value=True, key="clean_rank")
-    top_n_rank = st.number_input("Top-N candidatos por vaga", min_value=1, max_value=200, value=20, step=1)
+    if st.button("Gerar Explain"):
+        if not cv_t or not vaga_t:
+            st.warning("Informe CV e Vaga.")
+        else:
+            cv_raw = clean_text(cv_t) if clean_e else cv_t
+            vaga_raw = clean_text(vaga_t) if clean_e else vaga_t
 
-    # Concatena colunas conforme configurado na Base
-    df_cvs_b = st.session_state.df_cvs.copy()
-    df_vagas_b = st.session_state.df_vagas.copy()
-    df_cvs_b["_texto_cv"] = concat_cols(df_cvs_b, st.session_state.cv_cols_sel)
-    df_vagas_b["_texto_vaga"] = concat_cols(df_vagas_b, st.session_state.vaga_cols_sel)
+            model = load_model(MODEL_DIR)
+            pairs = top_n_pairs_by_cosine(
+                split_sentences(cv_raw, min_chars=min_chars),
+                split_sentences(vaga_raw, min_chars=min_chars),
+                model,
+                top_n=int(top_n),
+            )
+            if not pairs:
+                st.info("Sem pares para explicar.")
+            else:
+                cv_sents = split_sentences(cv_raw, min_chars=min_chars)
+                vaga_sents = split_sentences(vaga_raw, min_chars=min_chars)
+                rows = []
+                for rank, (i, j, sim) in enumerate(pairs, start=1):
+                    rows.append(
+                        {
+                            "rank": rank,
+                            "similaridade": round(float(sim), 6),
+                            "cv_index": i,
+                            "vaga_index": j,
+                            "cv_snippet": cv_sents[i],
+                            "vaga_snippet": vaga_sents[j],
+                        }
+                    )
+                exp_df = pd.DataFrame(rows)
+                st.dataframe(exp_df, use_container_width=True, hide_index=True)
 
-    # Campos de identificação sugestivos
-    cv_id_col = "id" if "id" in df_cvs_b.columns else None
-    cv_nome_col = "nome" if "nome" in df_cvs_b.columns else None
+# -------- TAB 5: Ranking por vaga --------
+with tab5:
+    st.subheader("Ranking por vaga — escolha a vaga e veja os top N candidatos")
+    vdf = st.session_state["vagas_df"].copy()
+    cdf = st.session_state["candidatos_df"].copy()
 
-    # Para selecionar a vaga: tenta criar um label amigável
-    # prioridade: 'id' + 'titulo_vaga' + preview de _texto_vaga
-    vaga_id_col = "id" if "id" in df_vagas_b.columns else None
-    vaga_titulo_col = None
-    for c in df_vagas_b.columns:
-        cl = c.lower()
-        if "titulo" in cl and "vaga" in cl:
-            vaga_titulo_col = c
-            break
-        if cl == "titulo" or cl == "title":
-            vaga_titulo_col = c
-            break
+    if vdf.empty or cdf.empty or "vaga_text" not in vdf.columns or "cv_text" not in cdf.columns:
+        st.info("Carregue as bases de **vagas (vaga_text)** e **candidatos (cv_text)** nas abas de Batch.")
+    else:
+        def _vaga_label(row: pd.Series) -> str:
+            title = row.get("title") or row.get("vaga_titulo") or ""
+            vid = row.get("vaga_id") or row.get("id") or ""
+            base_txt = ""
+            if isinstance(title, str) and title.strip():
+                base_txt = title.strip()
+            else:
+                vt = str(row.get("vaga_text", ""))
+                base_txt = (vt[:80] + ("…" if len(vt) > 80 else ""))
+            prefix = f"[{vid}] " if isinstance(vid, str) and vid else ""
+            return prefix + base_txt
 
-    # Monta opções de seleção
-    def _vaga_label(row):
-        titulo = str(row[vaga_titulo_col]) if vaga_titulo_col else ""
-        vid = str(row[vaga_id_col]) if vaga_id_col else ""
-        preview = str(row["_texto_vaga"])[:80].replace("\n", " ")
-        if titulo and vid:
-            return f"[{vid}] {titulo} — {preview}..."
-        if titulo:
-            return f"{titulo} — {preview}..."
-        if vid:
-            return f"[{vid}] {preview}..."
-        return preview + "..."
+        options = vdf.apply(_vaga_label, axis=1).tolist()
+        idx = st.selectbox("Selecione a vaga", options=range(len(options)), format_func=lambda i: options[i])
+        col_l, col_r = st.columns([1,1])
+        with col_l:
+            top_n = st.number_input("Top N candidatos", 1, 100, 10)
+        with col_r:
+            clean_rank = st.checkbox("Aplicar limpeza nos textos", True)
 
-    vagas_options = df_vagas_b.apply(_vaga_label, axis=1).tolist()
-    idx_vaga = st.selectbox("Escolha a vaga para rankear candidatos", options=list(range(len(vagas_options))),
-                            format_func=lambda i: vagas_options[i])
+        with st.expander("Ver descrição completa da vaga"):
+            vaga_text_sel = str(vdf.iloc[idx]["vaga_text"]) if "vaga_text" in vdf.columns else ""
+            st.write(vaga_text_sel)
 
-    vaga_sel = df_vagas_b.iloc[idx_vaga]
-    st.write("#### Prévia da Vaga Selecionada")
-    st.text_area("Texto da Vaga (concat.)", value=vaga_sel["_texto_vaga"], height=160, disabled=True)
+        # Botão explícito para gerar o ranking
+        gerar = st.button("🔍 Gerar ranking")
 
-    # Botão para buscar ranking
-    if st.button("🔎 Buscar na Base — Rankear Candidatos", type="primary"):
-        with st.spinner("Calculando ranking de candidatos..."):
-            # pares: cada CV contra a mesma vaga selecionada
-            pairs = [{"cv_text": cv_text, "vaga_text": vaga_sel["_texto_vaga"]} for cv_text in df_cvs_b["_texto_cv"].tolist()]
-            payload = {"pairs": pairs, "clean": clean_rank}
-            try:
-                r = api_post(API_URL, "/match/batch", payload)
-            except Exception as e:
-                st.error(f"Erro na requisição /match/batch: {e}")
-                st.stop()
+        if gerar:
+            cvs = cdf["cv_text"].astype(str).tolist()
+            if clean_rank:
+                cvs = [clean_text(x) for x in cvs]
+                vtxt = clean_text(vaga_text_sel)
+            else:
+                vtxt = vaga_text_sel
 
-        # Monta ranking por CV
-        recs = []
-        for i, item in enumerate(r["results"]):
-            cv_row = df_cvs_b.iloc[i]
-            recs.append({
-                "rank": None,  # vamos preencher após ordenar
-                "id_cv": cv_row[cv_id_col] if cv_id_col else i,
-                "nome_cv": cv_row[cv_nome_col] if cv_nome_col else "",
-                "similarity": item["similarity"],
-                "score": item["score"],
-                "passed_threshold": item["passed_threshold"],
-            })
+            with st.spinner("Calculando embeddings e similaridades…"):
+                emb_cvs = embed_texts(cvs, MODEL_DIR)
+                emb_vaga = embed_text(vtxt, MODEL_DIR)
+                sims = emb_cvs @ emb_vaga  # (N_candidatos,)
 
-        df_rank = pd.DataFrame(recs).sort_values("score", ascending=False)
-        df_rank["rank"] = range(1, len(df_rank) + 1)
-        df_rank = df_rank.head(int(top_n_rank))
+                order = np.argsort(-sims)[: int(top_n)]
+                rows = []
+                for rank, i in enumerate(order, start=1):
+                    sim = float(sims[i])
+                    score = proportional_score(sim, limiar)
+                    row_out = {
+                        "rank": rank,
+                        "cand_index": int(i),
+                        "similaridade": round(sim, 6),
+                        "score": round(score, 2),
+                        "aprovado": bool(sim >= limiar),
+                    }
+                    for col in ["candidate_id", "id", "nome", "name", "email", "telefone", "phone"]:
+                        if col in cdf.columns:
+                            row_out[col] = cdf.iloc[i][col]
+                    rows.append(row_out)
+                st.session_state["_last_ranking_df"] = pd.DataFrame(rows)
 
-        st.success(f"Ranking gerado — Modelo: {r.get('model_name','?')} | Vaga idx: {idx_vaga}")
-        st.dataframe(df_rank, use_container_width=True)
+        # Mostrar resultado se existir
+        if "_last_ranking_df" in st.session_state:
+            st.dataframe(st.session_state["_last_ranking_df"], use_container_width=True, hide_index=True)
+            st.download_button(
+                "Baixar ranking (CSV)",
+                data=st.session_state["_last_ranking_df"].to_csv(index=False).encode("utf-8"),
+                file_name="ranking_por_vaga.csv",
+                mime="text/csv",
+            )
+        else:
+            st.info("Clique em **Gerar ranking** para calcular o Top N candidatos da vaga selecionada.")
 
-        st.download_button(
-            "Baixar Ranking (CSV)",
-            df_rank.to_csv(index=False).encode("utf-8"),
-            file_name="ranking_candidatos_por_vaga.csv",
-            mime="text/csv"
-        )
+# -------- TAB 6: Bases atuais --------
+with tab6:
+    st.subheader("Bases atuais em memória")
+    st.write("**Candidatos (cv_text)**")
+    st.dataframe(st.session_state["candidatos_df"], use_container_width=True, hide_index=True)
+    st.write("**Vagas (vaga_text)**")
+    st.dataframe(st.session_state["vagas_df"], use_container_width=True, hide_index=True)
+
+    st.info(
+        "Essas bases são carregadas automaticamente se existirem nos caminhos padrão. "
+        "Você pode substituí-las via uploads na aba 'Batch (2 uploads)'."
+    )
+
+# ======================== FOOTER ========================
+st.caption(
+    f"Modelo: {MODEL_NAME} • Limiar atual: {limiar:.2f} • App: {APP_NAME} v{APP_VERSION} — Rodando 100% Streamlit"
+)
+
+with tab6:
+    st.subheader("Bases atuais em memória")
+    st.write("**Candidatos (cv_text)**")
+    st.dataframe(st.session_state["candidatos_df"], use_container_width=True, hide_index=True)
+    st.write("**Vagas (vaga_text)**")
+    st.dataframe(st.session_state["vagas_df"], use_container_width=True, hide_index=True)
+
+    st.info(
+        "Essas bases são carregadas automaticamente se existirem nos caminhos padrão. "
+        "Você pode substituí-las via uploads na aba 'Batch (2 uploads)'."
+    )
+
+# ======================== FOOTER ========================
+st.caption(
+    f"Modelo: {MODEL_NAME} • Limiar atual: {limiar:.2f} • App: {APP_NAME} v{APP_VERSION} — Rodando 100% Streamlit"
+)

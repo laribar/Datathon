@@ -1,3 +1,4 @@
+# === app/main.py (versão usando encoder local) ===
 import os
 import re
 import itertools
@@ -12,8 +13,14 @@ from sentence_transformers import SentenceTransformer
 APP_NAME = "MatchAPI"
 APP_VERSION = "1.0.0"
 
-MODEL_NAME = os.getenv("MODEL_NAME", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+# ----- CONFIG -----
 SCORE_LIMIAR = float(os.getenv("SCORE_LIMIAR", "0.75"))
+MODEL_DIR = os.path.join("models", "sbert_encoder")  # seu encoder local
+MODEL_NAME = os.getenv("MODEL_NAME", "local/models/sbert_encoder")  # só para exibir na API
+
+# Carrega o modelo na inicialização do servidor (única vez)
+# normalize_embeddings=True => dot product == cosine similarity
+sbert_encoder = SentenceTransformer(MODEL_DIR)
 
 # ---------- Utilidades ----------
 _whitespace_re = re.compile(r"\s+")
@@ -26,6 +33,7 @@ def clean_text(text: str) -> str:
     return text
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    # Se usarmos normalize_embeddings=True no encode, podemos usar dot direto.
     a_norm = np.linalg.norm(a)
     b_norm = np.linalg.norm(b)
     if a_norm == 0.0 or b_norm == 0.0:
@@ -98,24 +106,13 @@ class ExplainResponse(BaseModel):
 
 # ---------- App ----------
 app = FastAPI(title=APP_NAME, version=APP_VERSION)
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # ajuste p/ domínios específicos em produção
+    allow_origins=["*"],  # ajuste em produção
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Carrega o modelo na inicialização do servidor
-sbert_encoder = SentenceTransformer(MODEL_NAME)
-
-# (Opcional) Rotas externas
-# Se quiser usar um router separado em app/match_routes.py:
-# - garanta que exista app/__init__.py
-# - e descomente as 2 linhas abaixo
-# from .match_routes import router as match_router
-# app.include_router(match_router)
 
 @app.get("/health")
 def health():
@@ -130,10 +127,11 @@ def match(req: MatchRequest):
     cv_text = clean_text(req.cv_text) if req.clean else req.cv_text
     vaga_text = clean_text(req.vaga_text) if req.clean else req.vaga_text
 
-    cv_vec = sbert_encoder.encode(cv_text)
-    vaga_vec = sbert_encoder.encode(vaga_text)
+    cv_vec = sbert_encoder.encode(cv_text, normalize_embeddings=True, show_progress_bar=False)
+    vaga_vec = sbert_encoder.encode(vaga_text, normalize_embeddings=True, show_progress_bar=False)
 
-    sim = cosine_similarity(np.array(cv_vec), np.array(vaga_vec))
+    # Com normalize_embeddings=True, dot == cosine
+    sim = float(np.dot(cv_vec, vaga_vec))
     score = proportional_score(sim, SCORE_LIMIAR)
     passed = sim >= SCORE_LIMIAR
 
@@ -157,12 +155,12 @@ def match_batch(req: BatchMatchRequest):
     cvs = [clean_text(p.cv_text) if req.clean else p.cv_text for p in req.pairs]
     vagas = [clean_text(p.vaga_text) if req.clean else p.vaga_text for p in req.pairs]
 
-    cv_vecs = sbert_encoder.encode(cvs)
-    vaga_vecs = sbert_encoder.encode(vagas)
+    cv_vecs = sbert_encoder.encode(cvs, normalize_embeddings=True, show_progress_bar=False)
+    vaga_vecs = sbert_encoder.encode(vagas, normalize_embeddings=True, show_progress_bar=False)
 
     results: List[BatchMatchResponseItem] = []
     for idx, (cvv, vvv) in enumerate(zip(cv_vecs, vaga_vecs)):
-        sim = cosine_similarity(np.array(cvv), np.array(vvv))
+        sim = float(np.dot(cvv, vvv))
         score = proportional_score(sim, SCORE_LIMIAR)
         results.append(
             BatchMatchResponseItem(
@@ -199,12 +197,12 @@ def top_n_pairs_by_cosine(
 ) -> List[Tuple[int, int, float]]:
     if not A or not B:
         return []
-    A_vecs = encoder.encode(A)
-    B_vecs = encoder.encode(B)
+    A_vecs = encoder.encode(A, normalize_embeddings=True, show_progress_bar=False)
+    B_vecs = encoder.encode(B, normalize_embeddings=True, show_progress_bar=False)
     pairs = []
     for i, j in itertools.product(range(len(A)), range(len(B))):
-        sim = cosine_similarity(np.array(A_vecs[i]), np.array(B_vecs[j]))
-        pairs.append((i, j, float(sim)))
+        sim = float(np.dot(A_vecs[i], B_vecs[j]))  # dot == cosine por normalização
+        pairs.append((i, j, sim))
     pairs.sort(key=lambda x: x[2], reverse=True)
     return pairs[:max(1, top_n)]
 
@@ -213,9 +211,9 @@ def match_explain(req: ExplainRequest):
     cv_raw = clean_text(req.cv_text) if req.clean else req.cv_text
     vaga_raw = clean_text(req.vaga_text) if req.clean else req.vaga_text
 
-    cv_vec = sbert_encoder.encode(cv_raw)
-    vaga_vec = sbert_encoder.encode(vaga_raw)
-    overall_sim = cosine_similarity(np.array(cv_vec), np.array(vaga_vec))
+    cv_vec = sbert_encoder.encode(cv_raw, normalize_embeddings=True, show_progress_bar=False)
+    vaga_vec = sbert_encoder.encode(vaga_raw, normalize_embeddings=True, show_progress_bar=False)
+    overall_sim = float(np.dot(cv_vec, vaga_vec))
     overall_score = proportional_score(overall_sim, SCORE_LIMIAR)
 
     cv_sents = split_sentences(cv_raw, min_chars=req.min_chars)

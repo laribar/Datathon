@@ -13,6 +13,9 @@ import io
 import re
 import itertools
 from typing import List, Tuple
+from pathlib import Path
+import hashlib
+import json
 
 import numpy as np
 import pandas as pd
@@ -20,11 +23,17 @@ import streamlit as st
 from sentence_transformers import SentenceTransformer
 
 # ======================== CONFIG ========================
+EMB_DIR = Path(os.getenv("EMB_DIR", "data/embeddings"))
+EMB_DIR.mkdir(parents=True, exist_ok=True)
 APP_NAME = "SkillAI Match"
 APP_VERSION = "1.0.0"
 DEFAULT_LIMIAR = float(os.getenv("SCORE_LIMIAR", "0.75"))
 MODEL_DIR = os.getenv("MODEL_DIR", os.path.join("models", "sbert_encoder"))
 MODEL_NAME = os.getenv("MODEL_NAME", f"local:{MODEL_DIR}")
+CAND_EMB_PATH = EMB_DIR / "candidatos.npy"
+CAND_META_PATH = EMB_DIR / "candidatos.meta.json"
+VAGA_EMB_PATH = EMB_DIR / "vagas.npy"
+VAGA_META_PATH = EMB_DIR / "vagas.meta.json"
 
 # Caminhos para bases iniciais (se existirem, o app já sobe carregando-as)
 BASE_CANDIDATOS_PATH = os.getenv("BASE_CANDIDATOS_PATH", "data/applicants_clean.csv")
@@ -69,6 +78,41 @@ def top_n_pairs_by_cosine(A: List[str], B: List[str], encoder: "SentenceTransfor
         pairs.append((i, j, sim))
     pairs.sort(key=lambda x: x[2], reverse=True)
     return pairs[: max(1, top_n)]
+
+# ---- Helpers para cache de embeddings em disco ----
+
+def _hash_dataframe(df: pd.DataFrame) -> str:
+    buf = df.to_csv(index=False).encode("utf-8")
+    return hashlib.md5(buf).hexdigest()
+
+
+def _save_embeddings(npy_path: Path, meta_path: Path, embs: np.ndarray, meta: dict) -> None:
+    np.save(npy_path, embs)
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _load_embeddings(npy_path: Path, meta_path: Path) -> Tuple[np.ndarray, dict]:
+    arr = np.load(npy_path)
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+    return arr, meta
+
+
+def get_or_build_embeddings(df: pd.DataFrame, text_col: str, npy_path: Path, meta_path: Path, model_dir: str) -> np.ndarray:
+    sig = _hash_dataframe(df[[text_col]])
+    meta_expected = {"model_dir": model_dir, "text_col": text_col, "signature": sig}
+
+    if npy_path.exists() and meta_path.exists():
+        try:
+            embs, meta = _load_embeddings(npy_path, meta_path)
+            if meta == meta_expected and embs.shape[0] == len(df) and embs.ndim == 2:
+                return embs
+        except Exception:
+            pass
+
+    texts = df[text_col].astype(str).tolist()
+    embs = embed_texts(texts, model_dir)
+    _save_embeddings(npy_path, meta_path, embs, meta_expected)
+    return embs
 
 
 # ======================== CACHES ========================
@@ -125,6 +169,27 @@ def load_fixed_bases() -> Tuple[pd.DataFrame, pd.DataFrame]:
     return cand_df, vagas_df
 
 candidatos_df, vagas_df = load_fixed_bases()
+
+# Pré-calcula/recupera embeddings e guarda na sessão
+st.session_state["candidatos_df"] = candidatos_df.copy()
+st.session_state["vagas_df"] = vagas_df.copy()
+
+with st.sidebar:
+    if st.button("⚡ Pré-calcular embeddings e salvar cache"):
+        with st.spinner("Gerando embeddings (candidatos e vagas)…"):
+            cand_embs = get_or_build_embeddings(st.session_state["candidatos_df"], "cv_text", CAND_EMB_PATH, CAND_META_PATH, MODEL_DIR)
+            vaga_embs = get_or_build_embeddings(st.session_state["vagas_df"], "vaga_text", VAGA_EMB_PATH, VAGA_META_PATH, MODEL_DIR)
+            st.success(f"Cache salvo em {EMB_DIR}")
+
+# Carrega do cache (se existir); caso contrário, calcula on-demand nas abas
+try:
+    st.session_state["cand_embs"], _ = _load_embeddings(CAND_EMB_PATH, CAND_META_PATH)
+except Exception:
+    st.session_state["cand_embs"] = None
+try:
+    st.session_state["vaga_embs"], _ = _load_embeddings(VAGA_EMB_PATH, VAGA_META_PATH)
+except Exception:
+    st.session_state["vaga_embs"] = None
 
 # Sessão: mantém as bases atuais (podem ser trocadas por upload)
 if "candidatos_df" not in st.session_state:
@@ -361,28 +426,43 @@ with tab5:
             else:
                 vtxt = vaga_text_sel
 
-            with st.spinner("Calculando embeddings e similaridades…"):
-                emb_cvs = embed_texts(cvs, MODEL_DIR)
-                emb_vaga = embed_text(vtxt, MODEL_DIR)
-                sims = emb_cvs @ emb_vaga  # (N_candidatos,)
+            with st.spinner("Preparando embeddings dos candidatos…"):
+                if st.session_state.get("cand_embs") is None:
+                    cvs = cdf["cv_text"].astype(str).tolist()
+                    if clean_rank:
+                        cvs = [clean_text(x) for x in cvs]
+                    st.session_state["cand_embs"] = embed_texts(cvs, MODEL_DIR)
+                emb_cvs = st.session_state["cand_embs"]
 
-                order = np.argsort(-sims)[: int(top_n)]
-                rows = []
-                for rank, i in enumerate(order, start=1):
-                    sim = float(sims[i])
-                    score = proportional_score(sim, limiar)
-                    row_out = {
-                        "rank": rank,
-                        "cand_index": int(i),
-                        "similaridade": round(sim, 6),
-                        "score": round(score, 2),
-                        "aprovado": bool(sim >= limiar),
-                    }
-                    for col in ["candidate_id", "id", "nome", "name", "email", "telefone", "phone"]:
-                        if col in cdf.columns:
-                            row_out[col] = cdf.iloc[i][col]
-                    rows.append(row_out)
-                st.session_state["_last_ranking_df"] = pd.DataFrame(rows)
+            with st.spinner("Calculando embedding da vaga…"):
+                if st.session_state.get("vaga_embs") is not None and len(st.session_state["vaga_embs"]) == len(vdf):
+                    emb_vaga = st.session_state["vaga_embs"][idx]
+                    if clean_rank:
+                        vtxt = clean_text(vaga_text_sel)
+                        emb_vaga = embed_text(vtxt, MODEL_DIR)
+                else:
+                    vtxt = clean_rank and clean_text(vaga_text_sel) or vaga_text_sel
+                    emb_vaga = embed_text(vtxt, MODEL_DIR)
+
+            sims = emb_cvs @ emb_vaga  # (N_candidatos,)
+
+            order = np.argsort(-sims)[: int(top_n)]
+            rows = []
+            for rank, i in enumerate(order, start=1):
+                sim = float(sims[i])
+                score = proportional_score(sim, limiar)
+                row_out = {
+                    "rank": rank,
+                    "cand_index": int(i),
+                    "similaridade": round(sim, 6),
+                    "score": round(score, 2),
+                    "aprovado": bool(sim >= limiar),
+                }
+                for col in ["candidate_id", "id", "nome", "name", "email", "telefone", "phone"]:
+                    if col in cdf.columns:
+                        row_out[col] = cdf.iloc[i][col]
+                rows.append(row_out)
+            st.session_state["_last_ranking_df"] = pd.DataFrame(rows)
 
         # Mostrar resultado se existir
         if "_last_ranking_df" in st.session_state:

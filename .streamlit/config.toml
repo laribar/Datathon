@@ -1,0 +1,3 @@
+[server]
+# aumenta o limite padrão de 200 MB para 500 MB
+maxMessageSize = 500

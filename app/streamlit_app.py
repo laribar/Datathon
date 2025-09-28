@@ -16,8 +16,11 @@ st.set_page_config(page_title="Match CV × Vaga", layout="wide")
 DEFAULT_API_URL = os.getenv("MATCH_API_URL", "http://127.0.0.1:8000/")
 
 # -----------------------------
-# Helpers
+# Helpers (substituir os seus por estes)
 # -----------------------------
+import gc
+from io import BytesIO
+
 def api_get(api_url: str, path: str, timeout=30):
     url = f"{api_url}{path}"
     r = requests.get(url, timeout=timeout)
@@ -49,7 +52,33 @@ def highlight_snippet(snippet: str) -> str:
 def concat_cols(df: pd.DataFrame, cols: list) -> pd.Series:
     if not cols:
         return pd.Series([""] * len(df))
-    return df[cols].astype(str).agg(" ".join, axis=1)
+    # Evita criar Series intermediárias gigantes
+    return pd.Series((" ".join(map(str, row))) for row in df[cols].itertuples(index=False, name=None))
+
+# ---- Novos helpers de leitura com memória otimizada ----
+@st.cache_data(show_spinner=False)
+def load_csv_bytes_cached(file_bytes: bytes, use_chunks: bool = False, sep: str = ",") -> pd.DataFrame:
+    """
+    Lê CSV a partir de bytes. Se use_chunks=True, faz append por chunks (menos memória de pico).
+    """
+    bio = BytesIO(file_bytes)
+    if not use_chunks:
+        df = pd.read_csv(bio, sep=sep, dtype_backend="pyarrow", low_memory=False)
+        return df
+    # Chunks (ajuda quando muito grande)
+    bio.seek(0)
+    chunks = pd.read_csv(bio, sep=sep, chunksize=100_000, dtype_backend="pyarrow", low_memory=True)
+    df = pd.concat(chunks, ignore_index=True)
+    return df
+
+def uploaded_to_bytes(uploaded_file) -> bytes:
+    """
+    Converte UploadedFile para bytes e solta referência ao objeto do widget (reduz deepcopies).
+    """
+    if uploaded_file is None:
+        return b""
+    data = uploaded_file.getbuffer().tobytes()
+    return data
 
 # -----------------------------
 # Sidebar
@@ -85,11 +114,12 @@ if health.get("status") != "ok":
 st.markdown("---")
 
 # =========================================================
-# Base compartilhada (upload persistente em sessão)
+# Base compartilhada (upload persistente em sessão) — REESCRITO
 # =========================================================
 st.header("📦 Base (Upload de CSVs)")
 st.caption("Envie seus CSVs de **Currículos** e **Vagas** uma única vez. Eles ficarão disponíveis para o tab **🏅 Ranking por Vaga**.")
 
+# Estados leves na sessão
 if "df_cvs" not in st.session_state: st.session_state.df_cvs = None
 if "df_vagas" not in st.session_state: st.session_state.df_vagas = None
 if "cv_cols_sel" not in st.session_state: st.session_state.cv_cols_sel = []
@@ -97,26 +127,54 @@ if "vaga_cols_sel" not in st.session_state: st.session_state.vaga_cols_sel = []
 
 c_up1, c_up2 = st.columns(2)
 with c_up1:
-    cvs_file_base = st.file_uploader("Carregar CSV de Currículos (Base)", type=["csv"], key="cvs_base")
+    cvs_file_base = st.file_uploader(
+        "Carregar CSV de Currículos (Base)", type=["csv"], key="cvs_base",
+        help="Para arquivos muito grandes, marque a opção de chunks abaixo."
+    )
 with c_up2:
-    vagas_file_base = st.file_uploader("Carregar CSV de Vagas (Base)", type=["csv"], key="vagas_base")
+    vagas_file_base = st.file_uploader(
+        "Carregar CSV de Vagas (Base)", type=["csv"], key="vagas_base",
+        help="Para arquivos muito grandes, marque a opção de chunks abaixo."
+    )
 
-if cvs_file_base is not None:
-    try:
-        st.session_state.df_cvs = pd.read_csv(cvs_file_base)
-        st.success(f"CVs carregados: {st.session_state.df_cvs.shape[0]} linhas, {st.session_state.df_cvs.shape[1]} colunas.")
-        st.dataframe(st.session_state.df_cvs.head(10), use_container_width=True)
-    except Exception as e:
-        st.error(f"Erro ao ler CSV de Currículos: {e}")
+use_chunks = st.checkbox("Ler usando chunks (para CSVs muito grandes)", value=False)
+csv_sep = st.text_input("Separador CSV", value=",", help="Use ';' se seu CSV estiver em pt-BR com ponto e vírgula.")
 
-if vagas_file_base is not None:
-    try:
-        st.session_state.df_vagas = pd.read_csv(vagas_file_base)
-        st.success(f"Vagas carregadas: {st.session_state.df_vagas.shape[0]} linhas, {st.session_state.df_vagas.shape[1]} colunas.")
-        st.dataframe(st.session_state.df_vagas.head(10), use_container_width=True)
-    except Exception as e:
-        st.error(f"Erro ao ler CSV de Vagas: {e}")
+# Botões explícitos evitam múltiplas releituras durante o rerun
+c_btn1, c_btn2 = st.columns(2)
+with c_btn1:
+    if st.button("📥 Processar CSV de Currículos"):
+        if cvs_file_base is None:
+            st.warning("Envie primeiro o arquivo de Currículos.")
+        else:
+            try:
+                cv_bytes = uploaded_to_bytes(cvs_file_base)
+                st.session_state.df_cvs = load_csv_bytes_cached(cv_bytes, use_chunks=use_chunks, sep=csv_sep)
+                del cv_bytes; gc.collect()
+                st.success(f"CVs carregados: {st.session_state.df_cvs.shape[0]} linhas, {st.session_state.df_cvs.shape[1]} colunas.")
+                st.dataframe(st.session_state.df_cvs.head(10), use_container_width=True)
+            except MemoryError:
+                st.error("Faltou memória ao ler Currículos. Ative 'Ler usando chunks' ou reduza o arquivo.")
+            except Exception as e:
+                st.error(f"Erro ao ler CSV de Currículos: {e}")
 
+with c_btn2:
+    if st.button("📥 Processar CSV de Vagas"):
+        if vagas_file_base is None:
+            st.warning("Envie primeiro o arquivo de Vagas.")
+        else:
+            try:
+                vaga_bytes = uploaded_to_bytes(vagas_file_base)
+                st.session_state.df_vagas = load_csv_bytes_cached(vaga_bytes, use_chunks=use_chunks, sep=csv_sep)
+                del vaga_bytes; gc.collect()
+                st.success(f"Vagas carregadas: {st.session_state.df_vagas.shape[0]} linhas, {st.session_state.df_vagas.shape[1]} colunas.")
+                st.dataframe(st.session_state.df_vagas.head(10), use_container_width=True)
+            except MemoryError:
+                st.error("Faltou memória ao ler Vagas. Ative 'Ler usando chunks' ou reduza o arquivo.")
+            except Exception as e:
+                st.error(f"Erro ao ler CSV de Vagas: {e}")
+
+# Config colunas só aparece se ambos foram processados
 if (st.session_state.df_cvs is not None) and (st.session_state.df_vagas is not None):
     st.write("### Configurar Colunas para Concatenação")
     c_conf1, c_conf2 = st.columns(2)

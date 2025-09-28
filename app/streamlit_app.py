@@ -24,8 +24,10 @@ HF_MODEL_NAME = os.getenv("HF_MODEL_NAME", "sentence-transformers/paraphrase-mul
 # Dados CSV (Local e URLs)
 BASE_CANDIDATOS_PATH = os.getenv("BASE_CANDIDATOS_PATH", "data/applicants_clean.csv")
 BASE_VAGAS_PATH = os.getenv("BASE_VAGAS_PATH", "data/vagas_clean.csv")
-CANDIDATOS_CSV_URL = os.getenv("CANDIDATOS_CSV_URL") 
-VAGAS_CSV_URL = os.getenv("VAGAS_CSV_URL") 
+# Estas variáveis de ambiente devem ser configuradas para usar as URLs RAW do GitHub, por exemplo:
+# CANDIDATOS_CSV_URL = "https://raw.githubusercontent.com/janbar/Datathon/main/data/applicants_clean.csv"
+CANDIDATOS_CSV_URL = os.getenv("CANDIDATOS_CSV_URL", "https://raw.githubusercontent.com/janbar/Datathon/main/data/applicants_clean.csv") 
+VAGAS_CSV_URL = os.getenv("VAGAS_CSV_URL", "https://raw.githubusercontent.com/janbar/Datathon/main/data/vagas_clean.csv") 
 
 # Cache de embeddings: Remoto (URLs RAW do GitHub - PRIORIDADE MÁXIMA)
 CAND_EMB_URL = os.getenv("CAND_EMB_URL", "https://raw.githubusercontent.com/janbar/Datathon/main/data/embeddings/candidatos.npy") 
@@ -59,7 +61,84 @@ def proportional_score(sim: float, limiar: float) -> float:
     if sim >= limiar: return 100.0
     return max(0.0, (sim / limiar) * 100.0)
 
+# ======================== DATA LOADERS (MOVIDO PARA CIMA PARA CORRIGIR ERRO) ========================
+
+@st.cache_data(show_spinner=False)
+def _concat_all_columns(df: pd.DataFrame, target_col: str) -> pd.DataFrame:
+    """Concatena todas as colunas de texto em uma única coluna para o SBERT."""
+    out = df.copy()
+    if target_col in out.columns: out = out.drop(columns=[target_col])
+    # Tenta excluir colunas que são provavelmente IDs/índices
+    cols_to_concat = [c for c in out.columns if c.lower() not in ["id", "index", "uid", "score", "rank"]]
+    s = out[cols_to_concat].fillna("").astype(str)
+    # Concatena os valores não vazios separados por espaço
+    out[target_col] = s.apply(lambda row: " ".join([v for v in row.values if v != ""]).strip(), axis=1)
+    return out
+
+@st.cache_data(show_spinner=False)
+def _read_csv_local_or_url(local_path: str, url_env: str | None) -> pd.DataFrame | None:
+    """Carrega CSV da URL (Prioridade) ou do disco local (Fallback)."""
+    # 1. Tenta URL (Prioridade - Para deploy Cloud)
+    if url_env:
+        try:
+            r = requests.head(url_env, timeout=5)
+            if r.status_code == 200:
+                df = pd.read_csv(url_env)
+                st.info(f"🔗 Dados lidos da URL: {url_env}")
+                return df
+        except Exception: 
+            pass
+            
+    # 2. Tenta caminho local (Fallback - Para teste local)
+    try:
+        if os.path.exists(local_path): 
+            df = pd.read_csv(local_path)
+            st.info(f"📂 Dados lidos do disco local: {local_path}")
+            return df
+    except Exception: 
+        pass
+        
+    return None
+    
+@st.cache_data(show_spinner="Carregando bases de dados...", ttl=None)
+def load_fixed_bases() -> Tuple[pd.DataFrame, pd.DataFrame, list]:
+    """Carrega as bases de candidatos e vagas e concatena colunas de texto."""
+    logs = []
+    
+    # Chama a função que agora está definida!
+    cand = _read_csv_local_or_url(BASE_CANDIDATOS_PATH, CANDIDATOS_CSV_URL) 
+    vaga = _read_csv_local_or_url(BASE_VAGAS_PATH, VAGAS_CSV_URL)
+
+    # Fallback para dados de Amostra (se nenhum arquivo for encontrado)
+    if cand is None or cand.empty:
+        logs.append("⚠️ Não encontrei candidatos via URL ou local. Usando amostra.")
+        cand = pd.DataFrame({
+            "nome": ["Ana Silva", "Carlos Souza"],
+            "skills": ["Python Airflow Spark", "Java Spring SQL"],
+            "experiencia": ["3 anos em dados", "5 anos em backend"],
+            "cidade": ["São Paulo", "Rio de Janeiro"],
+            "id": [1, 2]
+        })
+    if vaga is None or vaga.empty:
+        logs.append("⚠️ Não encontrei vagas via URL ou local. Usando amostra.")
+        vaga = pd.DataFrame({
+            "titulo": ["Engenheira de Dados Senior", "Desenvolvedor Backend Java"],
+            "requisitos": ["Python, Spark, Airflow, AWS", "Java, Spring Boot, SQL, REST APIs"],
+            "descricao": ["Projetos de dados em ambiente cloud. Criação de pipelines ETL.", "Desenvolvimento de microserviços de alta performance."]
+        })
+        
+    # Concatena colunas de texto para o SBERT
+    cand = _concat_all_columns(cand, "cv_text")
+    vaga = _concat_all_columns(vaga, "vaga_text")
+    
+    logs.append(f"✅ Bases carregadas: {len(cand)} candidatos e {len(vaga)} vagas.")
+    
+    return cand, vaga, logs
+
 # ======================== EMBEDDING CACHE UTILS ========================
+# NOTA: O restante das funções de utilidade (cache, modelo) é idêntico ao que você já tinha,
+# mas foram movidas para baixo de 'DATA LOADERS' para garantir que tudo o que for chamado na 
+# inicialização (main) já esteja definido.
 
 @st.cache_data(show_spinner=False)
 def _hash_dataframe(df: pd.DataFrame) -> str:
@@ -123,6 +202,12 @@ def get_or_build_embeddings(df: pd.DataFrame, text_col: str, model_dir: str) -> 
     
     # Validação de cache (função auxiliar)
     def _is_valid(embs: np.ndarray | None, meta: dict, df: pd.DataFrame) -> bool:
+        """Verifica se o cache é válido, comparando com o DataFrame atual, o modelo e a versão do app."""
+        # Se FORCE_REBUILD estiver no model_dir, desativa o cache
+        if model_dir == "FORCE_REBUILD":
+             return False 
+             
+        # Checa se o conteúdo do meta.json e o tamanho do NPY batem
         return (
             embs is not None and 
             meta == meta_expected and 
@@ -141,6 +226,9 @@ def get_or_build_embeddings(df: pd.DataFrame, text_col: str, model_dir: str) -> 
     # 3. Se falhar ou não existir, constrói (Lento)
     st.warning(f"⏳ Reconstruindo embeddings para '{text_col}' (Não há cache válido). Isso pode levar alguns minutos...")
     texts = df[text_col].astype(str).tolist()
+    
+    # Garante que load_model seja chamada e que o modelo esteja pronto
+    encoder_model = load_model(model_dir) 
     embs = embed_texts(texts, model_dir) 
     
     _save_embeddings(npy_path, meta_path, embs, meta_expected) # Tenta salvar localmente para próxima vez
@@ -150,18 +238,19 @@ def get_or_build_embeddings(df: pd.DataFrame, text_col: str, model_dir: str) -> 
 # ======================== MODEL / ENCODER ========================
 @st.cache_resource(show_spinner="Carregando Encoder (Priorizando Modelo Local)...", ttl=None)
 def load_model(model_path: str):
-    """
-    Carrega o SentenceTransformer, priorizando o modelo local.
-    Os logs de sucesso foram removidos daqui para evitar duplicidade,
-    pois essa função é chamada múltiplas vezes pelo cache de embeddings.
-    """
-    from sentence_transformers import SentenceTransformer
-    
+    """Carrega o SentenceTransformer, priorizando o modelo local."""
+    # Importação dentro da função para evitar erro se a lib não estiver instalada
+    try:
+        from sentence_transformers import SentenceTransformer
+    except ImportError:
+        st.error("❌ Falha crítica: A biblioteca 'sentence-transformers' não está instalada.")
+        st.stop()
+        
     try:
         model = SentenceTransformer(model_path) 
         return model
     except Exception as e:
-        # Tenta fallback para o modelo Hugging Face (mensagem de erro mantida)
+        # Tenta fallback para o modelo Hugging Face
         try:
             model = SentenceTransformer(HF_MODEL_NAME)
             st.warning(f"⚠️ Modelo padrão do Hugging Face carregado como fallback.")
@@ -189,78 +278,6 @@ def embed_text(text: str, model_path: str) -> np.ndarray:
     emb = model.encode(text_clean, normalize_embeddings=True, show_progress_bar=False, convert_to_numpy=True)
     return emb.flatten()
 
-# ======================== DATA LOADERS ========================
-@st.cache_data(show_spinner=False)
-def _concat_all_columns(df: pd.DataFrame, target_col: str) -> pd.DataFrame:
-    """Concatena todas as colunas de texto em uma única coluna para o SBERT."""
-    out = df.copy()
-    if target_col in out.columns: out = out.drop(columns=[target_col])
-    # Tenta excluir colunas que são provavelmente IDs/índices
-    cols_to_concat = [c for c in out.columns if c.lower() not in ["id", "index", "uid", "score", "rank"]]
-    s = out[cols_to_concat].fillna("").astype(str)
-    # Concatena os valores não vazios separados por espaço
-    out[target_col] = s.apply(lambda row: " ".join([v for v in row.values if v != ""]).strip(), axis=1)
-    return out
-
-@st.cache_data(show_spinner=False)
-def _read_csv_local_or_url(local_path: str, url_env: str | None) -> pd.DataFrame | None:
-    """Carrega CSV da URL (Prioridade) ou do disco local (Fallback)."""
-    # 1. Tenta URL (Prioridade - Para deploy Cloud)
-    if url_env:
-        try:
-            r = requests.head(url_env, timeout=5)
-            if r.status_code == 200:
-                df = pd.read_csv(url_env)
-                st.info(f"🔗 Dados lidos da URL: {url_env}")
-                return df
-        except Exception: 
-            pass
-            
-    # 2. Tenta caminho local (Fallback - Para teste local)
-    try:
-        if os.path.exists(local_path): 
-            df = pd.read_csv(local_path)
-            st.info(f"📂 Dados lidos do disco local: {local_path}")
-            return df
-    except Exception: 
-        pass
-        
-    return None
-
-@st.cache_data(show_spinner="Carregando bases de dados...", ttl=None)
-def load_fixed_bases() -> Tuple[pd.DataFrame, pd.DataFrame, list]:
-    """Carrega as bases de candidatos e vagas e concatena colunas de texto."""
-    logs = []
-    
-    cand = _read_csv_local_or_url(BASE_CANDIDATOS_PATH, CANDIDATOS_CSV_URL) 
-    vaga = _read_csv_local_or_url(BASE_VAGAS_PATH, VAGAS_CSV_URL)
-
-    # Fallback para dados de Amostra (se nenhum arquivo for encontrado)
-    if cand is None or cand.empty:
-        logs.append("⚠️ Não encontrei candidatos via URL ou local. Usando amostra.")
-        cand = pd.DataFrame({
-            "nome": ["Ana Silva", "Carlos Souza"],
-            "skills": ["Python Airflow Spark", "Java Spring SQL"],
-            "experiencia": ["3 anos em dados", "5 anos em backend"],
-            "cidade": ["São Paulo", "Rio de Janeiro"],
-            "id": [1, 2]
-        })
-    if vaga is None or vaga.empty:
-        logs.append("⚠️ Não encontrei vagas via URL ou local. Usando amostra.")
-        vaga = pd.DataFrame({
-            "titulo": ["Engenheira de Dados Senior", "Desenvolvedor Backend Java"],
-            "requisitos": ["Python, Spark, Airflow, AWS", "Java, Spring Boot, SQL, REST APIs"],
-            "descricao": ["Projetos de dados em ambiente cloud. Criação de pipelines ETL.", "Desenvolvimento de microserviços de alta performance."]
-        })
-        
-    # Concatena colunas de texto para o SBERT
-    cand = _concat_all_columns(cand, "cv_text")
-    vaga = _concat_all_columns(vaga, "vaga_text")
-    
-    logs.append(f"✅ Bases carregadas: {len(cand)} candidatos e {len(vaga)} vagas.")
-    
-    return cand, vaga, logs
-
 # ======================== LÓGICA DE INICIALIZAÇÃO ========================
 
 # 1. Configurações da Página 
@@ -271,6 +288,7 @@ st.set_page_config(
 )
 
 # 2. Carrega o modelo (e exibe o log de sucesso apenas UMA VEZ)
+# Nota: load_model é @st.cache_resource e será executada apenas uma vez.
 with st.spinner("Carregando modelo Sentence-BERT..."):
     load_model(MODEL_DIR)
     st.success(f"✅ Modelo customizado carregado com sucesso de: **{MODEL_DIR}**")
@@ -285,21 +303,33 @@ st.session_state["vagas_df"] = vagas_df.copy()
 # 4. Tenta carregar embeddings de base OU recalcula
 # Executado apenas na primeira vez
 if "cache_loaded" not in st.session_state:
+    st.session_state["cache_loaded"] = False # Flag inicial
+    
+    # Exibe logs de carregamento de base antes da lentidão do embedding
+    if _logs:
+        with st.expander("Logs de Carregamento de Bases", expanded=False):
+            for m in _logs: st.caption(m)
+            
     with st.spinner("⚡ Preparando e carregando embeddings iniciais (Cache ou Reconstrução)..."):
         try:
+            # Tenta carregar ou construir os embeddings dos candidatos
             cand_embs_cache = get_or_build_embeddings(st.session_state["candidatos_df"], "cv_text", MODEL_DIR)
+            # Tenta carregar ou construir os embeddings das vagas
             vaga_embs_cache = get_or_build_embeddings(st.session_state["vagas_df"], "vaga_text", MODEL_DIR)
-            cache_loaded = True
+            
+            # Se ambos foram carregados/construídos com sucesso
+            if cand_embs_cache is not None and vaga_embs_cache is not None:
+                st.session_state["cache_loaded"] = True
+                st.session_state["cand_embs_cache"] = cand_embs_cache
+                st.session_state["vaga_embs_cache"] = vaga_embs_cache
+            else:
+                st.error("Não foi possível obter os embeddings para as bases fixas.")
+
         except Exception as e:
             st.error(f"Não foi possível carregar ou gerar os embeddings iniciais: {e}")
-            cand_embs_cache = None
-            vaga_embs_cache = None
-            cache_loaded = False
-
-    st.session_state["cache_loaded"] = cache_loaded
-    st.session_state["cand_embs_cache"] = cand_embs_cache
-    st.session_state["vaga_embs_cache"] = vaga_embs_cache
-
+            st.session_state["cache_loaded"] = False
+            st.session_state["cand_embs_cache"] = None
+            st.session_state["vaga_embs_cache"] = None
 
 # ======================== SIDEBAR E UI PRINCIPAL ========================
 
@@ -319,22 +349,23 @@ with st.sidebar:
     if st.button("⚡ Gerar/Atualizar Cache de Base", help="Força a reconstrução e tentativa de salvamento do cache local."):
         with st.spinner("Gerando e salvando cache (candidatos e vagas)…"):
             # Força a reconstrução (ignora caches existentes)
+            # A função get_or_build_embeddings verifica o argumento "FORCE_REBUILD" e invalida o cache
             st.session_state["cand_embs_cache"] = get_or_build_embeddings(st.session_state["candidatos_df"], "cv_text", "FORCE_REBUILD")
             st.session_state["vaga_embs_cache"] = get_or_build_embeddings(st.session_state["vagas_df"], "vaga_text", "FORCE_REBUILD")
+            
+            # Força a atualização da flag de cache
             st.session_state["cache_loaded"] = True
+            
             st.success(f"Cache gerado. Recarregue a página (F5) para usar o novo cache na inicialização.")
 
 # Exibe logs de carregamento de base
-if _logs:
-    with st.expander("Logs de Carregamento de Bases", expanded=False):
-        for m in _logs: st.caption(m)
-
+# Nota: Os logs de carregamento de base foram movidos para a área de inicialização (Passo 4)
+# para aparecerem antes dos warnings de reconstrução de embedding.
 
 st.title("🔎 RECRUT.AI - Match Semântico (Especialização)")
 st.markdown(f"Análise de similaridade entre Curricula e Vagas usando **Sentence-BERT** (Modelo: **{MODEL_DIR}**)")
 
 # -------------------- TABS (Apenas Ranking e Bases) --------------------
-# Abas 1x1, Batch e Explain removidas conforme solicitado
 tab_ranking, tab_bases = st.tabs(["📊 Ranking por Vaga", "📋 Bases de Dados"])
 
 # ############## TAB 1: Ranking por Vaga (Base Fixa) ##############
@@ -361,10 +392,11 @@ with tab_ranking:
         vaga_text_sel = str(vdf.iloc[idx]["vaga_text"])
 
         with col_limpeza:
-            # Se o cache estiver ativo, a limpeza desativa o cache e força a reconstrução
+            # O clean_rank é usado para forçar o recálculo/aplicar clean_text no momento do ranking
             clean_rank = st.checkbox("Aplicar limpeza nos textos (Recalcula embeddings)", not cache_loaded, key="clean_ranking")
             # Mensagem de status do cache dentro do contexto da limpeza
-            st.caption(f"Cache de Embeddings: {'✅ Ativo' if cache_loaded and not clean_rank else '❌ Inativo/Recálculo'}")
+            is_using_cache = cache_loaded and not clean_rank
+            st.caption(f"Cache de Embeddings: {'✅ Ativo (Base)' if is_using_cache else '❌ Inativo (Recálculo)'}")
 
         with st.expander("Ver descrição completa da vaga"):
             st.write(vaga_text_sel)
@@ -380,14 +412,14 @@ with tab_ranking:
                     # 1. Embeddings: Prioriza cache, mas recalcula se a limpeza for ativada
                     
                     # Embeddings dos Candidatos (N)
-                    if cache_loaded and not clean_rank:
+                    if is_using_cache:
                         emb_cvs = st.session_state["cand_embs_cache"]
                     else: 
                         cvs = cdf["cv_text"].astype(str).tolist()
                         emb_cvs = embed_texts(cvs, MODEL_DIR) # embed_texts já aplica clean_text
 
                     # Embedding da Vaga (1)
-                    if cache_loaded and not clean_rank:
+                    if is_using_cache:
                         # Seleciona o embedding pré-calculado da vaga
                         emb_vaga = st.session_state["vaga_embs_cache"][idx]
                     else: 

@@ -5,15 +5,19 @@ numpy>=1.26.4,<2
 requests>=2.31,<3
 joblib>=1.3.2
 psutil>=5.9
-sentence-transformers
+
 # --- NLP encoder (SBERT) ---
+# Usamos a versão específica para evitar conflitos.
 sentence-transformers==2.2.2
-torch>=2.1,<2.4
+
+# PyTorch (Dependência essencial para sentence-transformers, geralmente CPU no Streamlit Cloud)
+torch>=2.1,<2.4 
 
 # --- (Opcional) Ranqueamento com XGBoost ---
 xgboost>=2.0.3,<3
 
-
+# --- AWS / S3 Access ---
+# Essenciais para carregar dados/embeddings do S3
 boto3
 s3fs
 smart_open

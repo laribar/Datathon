@@ -15,6 +15,8 @@ A solução combina:
 - Deploy em **Render** para uso em produção.
 
 ---
+Os arquivos mais pesados foram colocados na AWS S3 para facilitar o Deploy via stramlit
+<img width="1722" height="575" alt="image" src="https://github.com/user-attachments/assets/7ad8d222-8f07-4b8d-8af2-382f7d38b19a" />
 
 ## 📂 Estrutura de Pastas
 

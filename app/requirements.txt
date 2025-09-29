@@ -8,8 +8,9 @@ psutil>=5.9
 
 # --- NLP encoder (SBERT) ---
 # Usamos a versão específica para evitar conflitos.
-sentence-transformers==2.2.2
 
+sentence-transformers
+huggingface-hub  # Adicione explicitamente esta dependência.
 # PyTorch (Dependência essencial para sentence-transformers, geralmente CPU no Streamlit Cloud)
 torch>=2.1,<2.4 
 

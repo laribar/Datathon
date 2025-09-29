@@ -10,6 +10,7 @@ import boto3
 import os
 import joblib
 import time
+import tempfile  # ← ADICIONAR ESTE IMPORT
 from datetime import datetime
 import logging
 
@@ -33,7 +34,7 @@ st.set_page_config(
 # Configurações do S3
 S3_BUCKET = "datathon-recrutai"
 S3_DATA_PATH = f"s3://{S3_BUCKET}/data"
-S3_MODEL_PATH = f"s3://{S3_BUCKET}/data/models" 
+S3_MODEL_PATH = f"s3://{S3_BUCKET}/data/models"
 
 # Nomes dos arquivos
 CANDIDATOS_FILE = "aplicante_clean.csv"
@@ -52,40 +53,60 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ==============================================================================
-# 3. FUNÇÕES DE CACHE E CARREGAMENTO OTIMIZADAS
+# 3. FUNÇÕES DE CACHE E CARREGAMENTO CORRIGIDAS
 # ==============================================================================
+
+def get_s3_fs():
+    """Retorna o filesystem do S3 com configuração correta"""
+    try:
+        # Usando s3fs com configuração padrão (pega credenciais do ambiente AWS)
+        fs = s3fs.S3FileSystem(anon=False)
+        # Testa o acesso listando o bucket
+        fs.ls(S3_BUCKET)
+        return fs
+    except Exception as e:
+        st.error(f"❌ Erro ao conectar com S3: {e}")
+        st.info("ℹ️ Verifique se as credenciais AWS estão configuradas corretamente:")
+        st.code("""
+# Configure suas credenciais AWS:
+export AWS_ACCESS_KEY_ID=your_access_key
+export AWS_SECRET_ACCESS_KEY=your_secret_key
+export AWS_DEFAULT_REGION=us-east-1
+
+# Ou use o AWS CLI:
+aws configure
+        """)
+        st.stop()
 
 @st.cache_resource(show_spinner="Carregando modelos (SBERT e XGBoost)...")
 def load_models() -> Tuple[Any, LabelEncoder]:
     """Carrega o modelo XGBoost e o LabelEncoder do S3 com tratamento robusto de erros."""
     try:
-        # Verificar se estamos em ambiente local primeiro
-        local_model_path = f"./modelo/{MODEL_FILE}"
-        local_encoder_path = f"./modelo/{ENCODER_FILE}"
+        fs = get_s3_fs()
         
-        if os.path.exists(local_model_path) and os.path.exists(local_encoder_path):
-            # Carregar do local
-            with st.spinner("Carregando modelos do disco local..."):
-                bst = joblib.load(local_model_path)
-                le = joblib.load(local_encoder_path)
-                st.toast("✅ Modelos carregados do disco local.", icon="✅")
-        else:
-            # Carregar do S3 explicitamente
-            with st.spinner("Carregando modelos do S3..."):
-                fs = s3fs.S3FileSystem() # Instancia o FileSystem
+        with st.spinner("Carregando modelos do S3..."):
+            # Caminhos completos no S3
+            model_s3_path = f"{S3_BUCKET}/data/models/{MODEL_FILE}"
+            encoder_s3_path = f"{S3_BUCKET}/data/models/{ENCODER_FILE}"
+            
+            st.info(f"📁 Buscando modelos em: s3://{model_s3_path}")
+            
+            # Verifica se os arquivos existem
+            if not fs.exists(model_s3_path):
+                st.error(f"❌ Arquivo do modelo não encontrado: s3://{model_s3_path}")
+                st.stop()
+            if not fs.exists(encoder_s3_path):
+                st.error(f"❌ Arquivo do encoder não encontrado: s3://{encoder_s3_path}")
+                st.stop()
 
-                # NOTE: Removendo 's3://' pois s3fs.S3FileSystem() é usado explicitamente
-                model_s3_path = os.path.join(S3_MODEL_PATH, MODEL_FILE).replace('s3://', '')
-                encoder_s3_path = os.path.join(S3_MODEL_PATH, ENCODER_FILE).replace('s3://', '')
+            # Carregamento dos arquivos
+            with fs.open(model_s3_path, 'rb') as f:
+                bst = joblib.load(f)
 
-                # Carregamento binário do S3
-                with fs.open(model_s3_path, 'rb') as f:
-                    bst = joblib.load(f)
+            with fs.open(encoder_s3_path, 'rb') as f:
+                le = joblib.load(f)
 
-                with fs.open(encoder_s3_path, 'rb') as f:
-                    le = joblib.load(f)
-
-                st.toast("✅ Modelos carregados do S3.", icon="✅")
+            st.toast("✅ Modelos carregados do S3 com sucesso!", icon="✅")
         
         # Validação dos modelos
         if bst is None:
@@ -102,9 +123,8 @@ def load_models() -> Tuple[Any, LabelEncoder]:
 
 @st.cache_resource(show_spinner="Carregando Sentence Transformer...")
 def load_encoder(model_name: str = 'all-MiniLM-L6-v2') -> SentenceTransformer:
-    """Carrega o modelo SBERT com fallback para modelos menores."""
+    """Carrega o modelo SBERT."""
     try:
-        # Tenta carregar o modelo especificado
         encoder = SentenceTransformer(model_name)
         
         # Testa o encoder com um texto pequeno
@@ -116,47 +136,54 @@ def load_encoder(model_name: str = 'all-MiniLM-L6-v2') -> SentenceTransformer:
         return encoder
         
     except Exception as e:
-        st.warning(f"⚠️ Não foi possível carregar {model_name}. Tentando modelo alternativo...")
-        try:
-            # Fallback para modelo menor
-            encoder = SentenceTransformer('paraphrase-albert-small-v2')
-            st.toast("✅ Encoder alternativo carregado.", icon="✅")
-            return encoder
-        except Exception as fallback_error:
-            st.error(f"❌ Falha ao carregar qualquer encoder: {fallback_error}")
-            st.stop()
+        st.error(f"❌ Falha ao carregar encoder: {e}")
+        st.stop()
 
-@st.cache_data(show_spinner="Carregando dados dos candidatos e vagas...")
+@st.cache_data(show_spinner="Carregando dados dos candidatos e vagas do S3...")
 def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Carrega os DataFrames de candidatos e vagas com opção de limite de linhas."""
+    """Carrega os DataFrames de candidatos e vagas do S3."""
     log_messages = []
     cdf = pd.DataFrame()
     vdf = pd.DataFrame()
 
     try:
+        fs = get_s3_fs()
+        
         # Carregar Candidatos
-        c_path = os.path.join(S3_DATA_PATH, CANDIDATOS_FILE)
-        cdf = pd.read_csv(c_path, nrows=_max_rows)
+        candidatos_s3_path = f"{S3_BUCKET}/data/{CANDIDATOS_FILE}"
+        st.info(f"📁 Carregando candidatos de: s3://{candidatos_s3_path}")
         
-        # Limpeza básica dos dados
-        cdf = cdf.dropna(subset=[CV_TEXT_COL])
-        cdf[CV_TEXT_COL] = cdf[CV_TEXT_COL].astype(str)
-        
-        log_messages.append(f"✅ Candidatos: {len(cdf):,} registros")
+        if not fs.exists(candidatos_s3_path):
+            st.error(f"❌ Arquivo de candidatos não encontrado: s3://{candidatos_s3_path}")
+        else:
+            with fs.open(candidatos_s3_path, 'rb') as f:
+                cdf = pd.read_csv(f, nrows=_max_rows)
+            
+            # Limpeza básica dos dados
+            cdf = cdf.dropna(subset=[CV_TEXT_COL])
+            cdf[CV_TEXT_COL] = cdf[CV_TEXT_COL].astype(str)
+            
+            log_messages.append(f"✅ Candidatos: {len(cdf):,} registros")
 
     except Exception as e:
         log_messages.append(f"❌ Erro ao carregar candidatos: {str(e)}")
 
     try:
         # Carregar Vagas
-        v_path = os.path.join(S3_DATA_PATH, VAGAS_FILE)
-        vdf = pd.read_csv(v_path)
+        vagas_s3_path = f"{S3_BUCKET}/data/{VAGAS_FILE}"
+        st.info(f"📁 Carregando vagas de: s3://{vagas_s3_path}")
         
-        # Limpeza básica das vagas
-        vdf = vdf.dropna(subset=[VAGA_TEXT_COL])
-        vdf[VAGA_TEXT_COL] = vdf[VAGA_TEXT_COL].astype(str)
-        
-        log_messages.append(f"✅ Vagas: {len(vdf):,} registros")
+        if not fs.exists(vagas_s3_path):
+            st.error(f"❌ Arquivo de vagas não encontrado: s3://{vagas_s3_path}")
+        else:
+            with fs.open(vagas_s3_path, 'rb') as f:
+                vdf = pd.read_csv(f)
+            
+            # Limpeza básica das vagas
+            vdf = vdf.dropna(subset=[VAGA_TEXT_COL])
+            vdf[VAGA_TEXT_COL] = vdf[VAGA_TEXT_COL].astype(str)
+            
+            log_messages.append(f"✅ Vagas: {len(vdf):,} registros")
 
     except Exception as e:
         log_messages.append(f"❌ Erro ao carregar vagas: {str(e)}")
@@ -175,6 +202,14 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
     # Validação final
     if cdf.empty or vdf.empty:
         st.error("🚨 Crítico: Dados insuficientes para continuar.")
+        st.info("""
+        **Solução:**
+        1. Verifique se os arquivos existem no S3
+        2. Verifique as permissões do bucket
+        3. Confirme os nomes dos arquivos:
+           - aplicante_clean.csv
+           - vagas_clean.csv
+        """)
         st.stop()
     
     return cdf, vdf
@@ -187,7 +222,7 @@ def get_or_create_embeddings(
     encoder: SentenceTransformer,
     _use_cache: bool = True
 ) -> np.ndarray:
-    """Gerencia cache de embeddings de forma eficiente com múltiplas estratégias."""
+    """Gerencia cache de embeddings de forma eficiente."""
     
     start_time = time.time()
     
@@ -197,42 +232,27 @@ def get_or_create_embeddings(
         st.info(f"♻️ Usando embeddings em cache: {filename}")
         return st.session_state[cache_key]
 
-    local_path = f"./cache/{filename}"
-    s3_emb_path = os.path.join(S3_DATA_PATH, "embeddings", filename)
-
-    # 1. Tentar carregar do cache local
-    if _use_cache and os.path.exists(local_path):
-        try:
-            with st.spinner(f"📥 Carregando embeddings locais: {filename}"):
-                embeddings = np.load(local_path)
-            if embeddings.shape[0] == len(df):
-                st.session_state[cache_key] = embeddings
-                st.success(f"✅ Embeddings locais carregados: {embeddings.shape}")
-                return embeddings
-        except Exception as e:
-            st.warning(f"⚠️ Cache local corrompido: {e}")
-
-    # 2. Tentar carregar do S3
-    if _use_cache:
-        try:
-            with st.spinner(f"☁️ Buscando embeddings no S3: {filename}"):
-                fs = s3fs.S3FileSystem()
+    try:
+        fs = get_s3_fs()
+        s3_emb_path = f"{S3_BUCKET}/data/embeddings/{filename}"
+        
+        # 1. Tentar carregar do S3
+        if _use_cache and fs.exists(s3_emb_path):
+            with st.spinner(f"☁️ Carregando embeddings do S3: {filename}"):
                 with fs.open(s3_emb_path, 'rb') as f:
                     embeddings = np.load(f)
                 
                 if embeddings.shape[0] == len(df):
-                    # Salvar localmente para cache futuro
-                    os.makedirs('./cache', exist_ok=True)
-                    np.save(local_path, embeddings)
                     st.session_state[cache_key] = embeddings
                     st.success(f"✅ Embeddings S3 carregados: {embeddings.shape}")
                     return embeddings
                 else:
                     st.warning("⚠️ Cache S3 incompatível. Gerando novos embeddings.")
-        except Exception as e:
-            st.info(f"ℹ️ Cache S3 não disponível: {e}")
+                    
+    except Exception as e:
+        st.info(f"ℹ️ Cache S3 não disponível: {e}")
 
-    # 3. Gerar novos embeddings
+    # 2. Gerar novos embeddings
     st.warning(f"🔄 Gerando novos embeddings para {len(df):,} registros...")
     
     # Preparar textos
@@ -264,22 +284,40 @@ def get_or_create_embeddings(
     progress_bar.empty()
     status_text.empty()
     
-    # Salvar em cache
+    # 3. Tentar salvar no S3 para uso futuro
     try:
-        os.makedirs('./cache', exist_ok=True)
-        np.save(local_path, embeddings)
-        st.session_state[cache_key] = embeddings
-        st.success(f"✅ Novos embeddings gerados e salvos: {embeddings.shape}")
+        fs = get_s3_fs()
+        s3_emb_path = f"{S3_BUCKET}/data/embeddings/{filename}"
+        
+        # Método mais simples para salvar no S3
+        with st.spinner("💾 Salvando embeddings no S3..."):
+            # Criar arquivo temporário
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.npy') as tmp_file:
+                tmp_path = tmp_file.name
+            
+            # Salvar numpy array no arquivo temporário
+            np.save(tmp_path, embeddings)
+            
+            # Fazer upload para S3
+            with open(tmp_path, 'rb') as f:
+                fs.put(f, s3_emb_path)
+            
+            # Limpar arquivo temporário
+            os.unlink(tmp_path)
+            
+        st.success(f"✅ Novos embeddings salvos no S3: {embeddings.shape}")
+        
     except Exception as e:
-        st.warning(f"⚠️ Não foi possível salvar cache local: {e}")
+        st.warning(f"⚠️ Não foi possível salvar no S3: {e}")
 
+    st.session_state[cache_key] = embeddings
     elapsed_time = time.time() - start_time
     st.info(f"⏱️ Tempo total de processamento: {elapsed_time:.2f}s")
     
     return embeddings
 
 # ==============================================================================
-# 4. FUNÇÕES DE PREDIÇÃO OTIMIZADAS
+# 4. FUNÇÕES DE PREDIÇÃO
 # ==============================================================================
 
 def predict_match_and_rank(
@@ -294,7 +332,6 @@ def predict_match_and_rank(
     
     # Limitar número de candidatos para predição se necessário
     if len(cdf) > top_k:
-        # Selecionar candidatos mais promissores por similaridade inicial
         similarities = cosine_similarity(vaga_embedding.reshape(1, -1), all_candidate_embeddings)[0]
         top_indices = np.argsort(similarities)[-top_k:]
         candidate_embeddings_subset = all_candidate_embeddings[top_indices]
@@ -370,7 +407,7 @@ def main():
     """Função principal do aplicativo Streamlit."""
     
     # Header principal
-    st.title("🎯 Sistema Avançado de Match de Talentos")
+    st.title("🎯 RECRUT.AI - Sistema de Match de Talentos")
     st.markdown("""
     **Tecnologias:** 
     - 🤖 Sentence Transformers (SBERT) para embeddings de texto
@@ -379,7 +416,29 @@ def main():
     - ⚡ Otimizações de cache e performance
     """)
     
-    # Sidebar
+    # Verificação de credenciais AWS
+    with st.sidebar:
+        st.header("🔐 Configurações AWS")
+        aws_region = st.selectbox(
+            "Região AWS:",
+            ["us-east-1", "us-east-2", "us-west-1", "us-west-2", "sa-east-1"],
+            index=0
+        )
+        
+        st.info(f"**Bucket:** {S3_BUCKET}")
+        st.info(f"**Região:** {aws_region}")
+        
+        if st.button("🧪 Testar Conexão S3"):
+            try:
+                fs = get_s3_fs()
+                files = fs.ls(S3_BUCKET)
+                st.success(f"✅ Conexão OK! {len(files)} itens no bucket")
+                for file in files[:5]:  # Mostra apenas os primeiros 5
+                    st.write(f"📁 {file}")
+            except Exception as e:
+                st.error(f"❌ Falha na conexão: {e}")
+    
+    # Sidebar principal
     with st.sidebar:
         st.header("⚙️ Configurações")
         

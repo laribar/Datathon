@@ -15,9 +15,11 @@ venv/
 .vscode/
 .idea/
 .DS_Store
-# Dados pesados (ignora apenas os arquivos grandes específicos)
-#data/*.json
-#data/*.csv
+# Dados pesados (ignora todos os arquivos dentro de data/)
+data/
+!data/.gitkeep # Se você quiser manter a pasta rastreada
+!data/processed/ # Rastreia apenas a pasta processed
+data/processed/* # Ignora TUDO dentro de processed/...
 !data/processed/pairs.parquet
 !data/processed/matches.csv
 !data/processed/no_matches.csv

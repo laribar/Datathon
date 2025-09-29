@@ -98,13 +98,33 @@ def proportional_score(sim: float, limiar: float) -> float:
     return max(0.0, (sim / limiar) * 100.0)
 
 def _concat_all_columns(df: pd.DataFrame, new_col_name: str) -> pd.DataFrame:
-    """Combina colunas de texto em uma única coluna 'new_col_name'."""
+    """Combina colunas de texto em uma única coluna 'new_col_name', tratando erros de colunas vazias."""
     df = df.copy()
-    cols_to_exclude = {new_col_name, 'id', 'indice_origem', 'versao'}
-    text_cols = [col for col in df.columns if col not in cols_to_exclude and df[col].dtype == 'object']
     
+    # 1. Identifica colunas a serem excluídas (exceto o próprio ID)
+    cols_to_exclude = {new_col_name, 'indice_origem', 'versao'}
+    
+    # 2. Seleciona TODAS as outras colunas para concatenação
+    # Incluímos 'id' na exclusão original (L100 do seu código), mas mantê-lo aqui é menos arriscado.
+    # Vamos redefinir 'text_cols' para incluir todas as colunas não excluídas, independentemente do dtype, e forçar a conversão para string.
+    
+    # Apenas exclui a nova coluna e colunas de controle
+    cols_to_exclude = {new_col_name, 'indice_origem', 'versao'} 
+    text_cols = [col for col in df.columns if col not in cols_to_exclude]
+    
+    if not text_cols:
+        # ❗ TRATAMENTO DE ERRO: Se a lista de colunas estiver vazia, retorna um DF com a coluna de texto vazia.
+        # Isso evita o erro fatal no Pandas.
+        df[new_col_name] = ""
+        st.warning(f"⚠️ A função de concatenação ({new_col_name}) não encontrou colunas válidas no DataFrame. Verifique a estrutura do CSV.")
+        return df
+
+    # 3. Combina colunas: Converte para string e concatena
     df[new_col_name] = df[text_cols].astype(str).agg(' '.join, axis=1)
-    df[new_col_name] = df[new_col_name].str.strip().apply(clean_text)
+    
+    # 4. Limpeza
+    df[new_col_name] = df[new_col_name].str.strip()
+    df[new_col_name] = df[new_col_name].apply(clean_text)
     
     return df
 

@@ -10,7 +10,7 @@ import boto3
 import os
 import joblib
 import time
-import tempfile  # ← ADICIONAR ESTE IMPORT
+import tempfile 
 from datetime import datetime
 import logging
 
@@ -28,8 +28,12 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# Configuração de logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # ==============================================================================
-# 2. VARIÁVEIS DE CONFIGURAÇÃO (S3, PATHS, ETC.)
+# 2. VARIÁVEIS DE CONFIGURAÇÃO (S3, PATHS, ETC.) E INJEÇÃO DE SECRETS
 # ==============================================================================
 # Configurações do S3
 S3_BUCKET = "datathon-recrutai"
@@ -48,35 +52,51 @@ ENCODER_FILE = "encoder_le.pkl"
 CV_TEXT_COL = 'cv_text'
 VAGA_TEXT_COL = 'vaga_text'
 
-# Configuração de logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# --- 🎯 CORREÇÃO CRÍTICA: INJEÇÃO DE SECRETS DO STREAMLIT CLOUD ---
+# Verifica se os segredos AWS foram configurados (no painel do Streamlit Cloud)
+if "aws" in st.secrets:
+    try:
+        # Exporta as chaves para as variáveis de ambiente, que são lidas por boto3/s3fs
+        os.environ["AWS_ACCESS_KEY_ID"] = st.secrets["aws"]["AWS_ACCESS_KEY_ID"]
+        os.environ["AWS_SECRET_ACCESS_KEY"] = st.secrets["aws"]["AWS_SECRET_ACCESS_KEY"]
+        
+        # Define a região padrão para S3FS/boto3
+        aws_region = st.secrets["aws"].get("AWS_REGION", "us-east-1")
+        os.environ["AWS_DEFAULT_REGION"] = aws_region
+        
+        logger.info(f"Credenciais AWS carregadas via st.secrets. Região: {aws_region}")
+    except KeyError as e:
+        logger.error(f"Erro: Segredo AWS faltando: {e}. Verifique o formato no Streamlit Secrets.")
+        st.error(f"❌ Segredo AWS faltando. Verifique se o formato [aws] está correto. Erro: {e}")
+        st.stop()
+# -----------------------------------------------------------------------------
+
 
 # ==============================================================================
 # 3. FUNÇÕES DE CACHE E CARREGAMENTO CORRIGIDAS
 # ==============================================================================
 
+@st.cache_resource(show_spinner=False)
 def get_s3_fs():
     """Retorna o filesystem do S3 com configuração correta"""
     try:
-        # Usando s3fs com configuração padrão (pega credenciais do ambiente AWS)
-        fs = s3fs.S3FileSystem(anon=False)
+        # Tenta pegar as variáveis de ambiente, que foram setadas no bloco acima
+        fs = s3fs.S3FileSystem(anon=False) 
         # Testa o acesso listando o bucket
         fs.ls(S3_BUCKET)
         return fs
     except Exception as e:
+        # Se falhar, é erro de permissão (Forbidden) ou credenciais ausentes.
         st.error(f"❌ Erro ao conectar com S3: {e}")
-        st.info("ℹ️ Verifique se as credenciais AWS estão configuradas corretamente:")
-        st.code("""
-# Configure suas credenciais AWS:
-export AWS_ACCESS_KEY_ID=your_access_key
-export AWS_SECRET_ACCESS_KEY=your_secret_key
-export AWS_DEFAULT_REGION=us-east-1
-
-# Ou use o AWS CLI:
-aws configure
-        """)
+        st.info("ℹ️ Verifique se as credenciais AWS estão configuradas corretamente no Streamlit Secrets.")
         st.stop()
+
+# --- As funções 'load_models', 'load_encoder', 'load_data', 'get_or_create_embeddings' e 'predict_match_and_rank' não precisam de alterações, 
+# pois agora chamam get_s3_fs(), que está corrigido. ---
+
+# ... [As funções load_models, load_encoder, load_data, get_or_create_embeddings e predict_match_and_rank 
+# e as funções auxiliares 'format_currency' e 'display_candidate_card' permanecem inalteradas
+# para manter a clareza, pois a correção é apenas no bloco de secrets e get_s3_fs] ...
 
 @st.cache_resource(show_spinner="Carregando modelos (SBERT e XGBoost)...")
 def load_models() -> Tuple[Any, LabelEncoder]:
@@ -205,7 +225,7 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
         st.info("""
         **Solução:**
         1. Verifique se os arquivos existem no S3
-        2. Verifique as permissões do bucket
+        2. Verifique as permissões do bucket (erro 'Forbidden')
         3. Confirme os nomes dos arquivos:
            - aplicante_clean.csv
            - vagas_clean.csv
@@ -409,8 +429,7 @@ def main():
     # Header principal
     st.title("🎯 RECRUT.AI - Sistema de Match de Talentos")
     st.markdown("""
-    **Tecnologias:** 
-    - 🤖 Sentence Transformers (SBERT) para embeddings de texto
+    **Tecnologias:** - 🤖 Sentence Transformers (SBERT) para embeddings de texto
     - 🌳 XGBoost para classificação de matching
     - ☁️ AWS S3 para armazenamento
     - ⚡ Otimizações de cache e performance
@@ -419,9 +438,13 @@ def main():
     # Verificação de credenciais AWS
     with st.sidebar:
         st.header("🔐 Configurações AWS")
+        
+        # O código agora deve ler a região do ambiente se foi injetada por st.secrets
+        current_region = os.environ.get("AWS_DEFAULT_REGION", "N/A")
+        
         aws_region = st.selectbox(
-            "Região AWS:",
-            ["us-east-1", "us-east-2", "us-west-1", "us-west-2", "sa-east-1"],
+            "Região AWS (Definida nos Secrets):",
+            [current_region] if current_region != "N/A" else ["us-east-1", "us-east-2", "sa-east-1"],
             index=0
         )
         

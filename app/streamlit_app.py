@@ -52,11 +52,6 @@ ENCODER_FILE = "encoder_le.pkl"
 CV_TEXT_COL = 'cv_text'
 VAGA_TEXT_COL = 'vaga_text'
 
-# ==============================================================================
-# 2. VARIÁVEIS DE CONFIGURAÇÃO (S3, PATHS, ETC.) E INJEÇÃO DE SECRETS
-# ==============================================================================
-# ... (Seu código de constantes) ...
-
 # --- 🎯 CORREÇÃO CRÍTICA: INJEÇÃO DE SECRETS DO STREAMLIT CLOUD ---
 if "aws" in st.secrets:
     try:
@@ -102,13 +97,6 @@ def get_s3_fs():
         st.error(f"❌ Erro ao conectar com S3: {e}")
         st.info("ℹ️ Verifique se as credenciais AWS estão configuradas corretamente no Streamlit Secrets.")
         st.stop()
-
-# --- As funções 'load_models', 'load_encoder', 'load_data', 'get_or_create_embeddings' e 'predict_match_and_rank' não precisam de alterações, 
-# pois agora chamam get_s3_fs(), que está corrigido. ---
-
-# ... [As funções load_models, load_encoder, load_data, get_or_create_embeddings e predict_match_and_rank 
-# e as funções auxiliares 'format_currency' e 'display_candidate_card' permanecem inalteradas
-# para manter a clareza, pois a correção é apenas no bloco de secrets e get_s3_fs] ...
 
 @st.cache_resource(show_spinner="Carregando modelos (SBERT e XGBoost)...")
 def load_models() -> Tuple[Any, LabelEncoder]:
@@ -239,8 +227,8 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
         1. Verifique se os arquivos existem no S3
         2. Verifique as permissões do bucket (erro 'Forbidden')
         3. Confirme os nomes dos arquivos:
-           - aplicante_clean.csv
-           - vagas_clean.csv
+            - aplicante_clean.csv
+            - vagas_clean.csv
         """)
         st.stop()
     

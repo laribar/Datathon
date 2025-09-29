@@ -33,7 +33,7 @@ st.set_page_config(
 # Configurações do S3
 S3_BUCKET = "datathon-recrutai"
 S3_DATA_PATH = f"s3://{S3_BUCKET}/data"
-S3_MODEL_PATH = f"s3://{S3_BUCKET}/data/model"
+S3_MODEL_PATH = f"s3://{S3_BUCKET}/data/models" 
 
 # Nomes dos arquivos
 CANDIDATOS_FILE = "aplicante_clean.csv"
@@ -70,13 +70,21 @@ def load_models() -> Tuple[Any, LabelEncoder]:
                 le = joblib.load(local_encoder_path)
                 st.toast("✅ Modelos carregados do disco local.", icon="✅")
         else:
-            # Carregar do S3
+            # Carregar do S3 explicitamente
             with st.spinner("Carregando modelos do S3..."):
-                model_path = os.path.join(S3_MODEL_PATH, MODEL_FILE)
-                encoder_path = os.path.join(S3_MODEL_PATH, ENCODER_FILE)
-                
-                bst = joblib.load(model_path)
-                le = joblib.load(encoder_path)
+                fs = s3fs.S3FileSystem() # Instancia o FileSystem
+
+                # NOTE: Removendo 's3://' pois s3fs.S3FileSystem() é usado explicitamente
+                model_s3_path = os.path.join(S3_MODEL_PATH, MODEL_FILE).replace('s3://', '')
+                encoder_s3_path = os.path.join(S3_MODEL_PATH, ENCODER_FILE).replace('s3://', '')
+
+                # Carregamento binário do S3
+                with fs.open(model_s3_path, 'rb') as f:
+                    bst = joblib.load(f)
+
+                with fs.open(encoder_s3_path, 'rb') as f:
+                    le = joblib.load(f)
+
                 st.toast("✅ Modelos carregados do S3.", icon="✅")
         
         # Validação dos modelos

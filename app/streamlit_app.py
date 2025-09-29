@@ -3,7 +3,6 @@ from pathlib import Path
 from typing import List, Tuple
 # Importações essenciais para o modelo de ranqueamento
 import joblib 
-import io 
 from xgboost import XGBClassifier 
 import numpy as np
 import pandas as pd
@@ -89,7 +88,6 @@ def _read_csv_local_or_url(local_path: str, url_env: str | None) -> pd.DataFrame
     """Carrega CSV da URL (Prioridade) ou do disco local (Fallback)."""
     
     # ❗ CORREÇÃO 1: Parâmetros robustos para o seu CSV completo. 
-    # Mudar 'sep: None' para ',' e 'quoting: 3' (QUOTE_NONE) para 0 (QUOTE_MINIMAL)
     READ_CSV_PARAMS = {
         'sep': ',',             
         'encoding': 'utf-8', 
@@ -102,14 +100,12 @@ def _read_csv_local_or_url(local_path: str, url_env: str | None) -> pd.DataFrame
     # 1. Tenta URL (Prioridade - Para deploy Cloud)
     if url_env:
         try:
-            r = requests.head(url_env, timeout=10)
-            if r.status_code == 200:
-                df = pd.read_csv(url_env, **READ_CSV_PARAMS)
-                st.info(f"🔗 Dados lidos da URL: {url_env} ({len(df)} registros)")
-                return df
+            # Usa GET em vez de HEAD para maior compatibilidade
+            df = pd.read_csv(url_env, **READ_CSV_PARAMS)
+            st.info(f"🔗 Dados lidos da URL: {url_env} ({len(df)} registros)")
+            return df
         except Exception as e:
             st.warning(f"⚠️ Falha ao carregar URL {url_env}: {e}")
-            pass
             
     # 2. Tenta caminho local (Fallback - Para teste local)
     try:
@@ -119,7 +115,6 @@ def _read_csv_local_or_url(local_path: str, url_env: str | None) -> pd.DataFrame
             return df
     except Exception as e:
         st.warning(f"⚠️ Falha ao carregar arquivo local {local_path}: {e}")
-        pass
         
     return None
     
@@ -145,19 +140,19 @@ def load_fixed_bases() -> Tuple[pd.DataFrame, pd.DataFrame, list]:
         })
     else:
         logs.append(f"✅ Candidatos carregados: {len(cand)} registros, {len(cand.columns)} colunas")
-        logs.append(f"   Colunas: {list(cand.columns)}")
+        logs.append(f"   Colunas: {list(cand.columns)}")
         
     if vaga is None or vaga.empty:
         logs.append("⚠️ Não encontrei vagas via URL ou local. Usando amostra.")
         # Se for a amostra, certifique-se de que 'titulo_vaga' exista (ou mapeie)
         vaga = pd.DataFrame({
-            "titulo_vaga": ["Engenheira de Dados Senior", "Desenvolvedor Backend Java"], # Nome corrigido
+            "titulo_vaga": ["Engenheira de Dados Senior", "Desenvolvedor Backend Java"],
             "requisitos": ["Python, Spark, Airflow, AWS", "Java, Spring Boot, SQL, REST APIs"],
             "descricao": ["Projetos de dados em ambiente cloud. Criação de pipelines ETL.", "Desenvolvimento de microserviços de alta performance."]
         })
     else:
         logs.append(f"✅ Vagas carregadas: {len(vaga)} registros, {len(vaga.columns)} colunas")
-        logs.append(f"   Colunas: {list(vaga.columns)}")
+        logs.append(f"   Colunas: {list(vaga.columns)}")
         
     # Concatena colunas de texto para o SBERT
     cand = _concat_all_columns(cand, "cv_text")
@@ -257,7 +252,6 @@ def get_or_build_embeddings(df: pd.DataFrame, text_col: str, model_dir: str) -> 
     texts = df[text_col].astype(str).tolist()
     
     # Garante que load_model seja chamada e que o modelo esteja pronto
-    encoder_model = load_model(model_dir) 
     embs = embed_texts(texts, model_dir) 
     
     _save_embeddings(npy_path, meta_path, embs, meta_expected) # Tenta salvar localmente para próxima vez
@@ -272,13 +266,6 @@ XGB_MODEL_PATH = Path(os.getenv("XGB_MODEL_PATH", "models")) / XGB_MODEL_NAME
 @st.cache_resource(show_spinner="Carregando Modelo de Ranqueamento (XGBoost)...", ttl=None)
 def load_xgb_model(model_path: Path) -> XGBClassifier | None:
     """Carrega o modelo XGBoost treinado a partir de um arquivo .pkl."""
-    # ❗ CORREÇÃO 2: Adiciona a verificação de importação do joblib para evitar erro 'no module named joblib'
-    try:
-        import joblib
-    except ImportError:
-        st.error("❌ Falha crítica: A biblioteca 'joblib' não está instalada.")
-        return None
-        
     if not model_path.exists():
         st.error(f"❌ Falha crítica: Modelo XGBoost não encontrado em: {model_path}")
         return None
@@ -322,7 +309,7 @@ def embed_texts(texts: List[str], model_path: str) -> np.ndarray:
     # Aplica a limpeza antes de embedar
     texts = [clean_text(t) for t in texts] 
     # **IMPORTANTE**: Normaliza os embeddings
-    return model.encode(texts, normalize_embeddings=True, show_progress_bar=True, convert_to_numpy=True)
+    return model.encode(texts, normalize_embeddings=True, show_progress_bar=False, convert_to_numpy=True)
 
 @st.cache_data(show_spinner="Gerando embedding...", ttl=3600, max_entries=20)
 def embed_text(text: str, model_path: str) -> np.ndarray:
@@ -330,7 +317,7 @@ def embed_text(text: str, model_path: str) -> np.ndarray:
     model = load_model(model_path)
     text_clean = clean_text(text)
     # **IMPORTANTE**: Normaliza os embeddings
-    emb = model.encode(text_clean, normalize_embeddings=True, show_progress_bar=True, convert_to_numpy=True)
+    emb = model.encode(text_clean, normalize_embeddings=True, show_progress_bar=False, convert_to_numpy=True)
     return emb.flatten()
 
 def generate_xgb_features(vaga_emb: np.ndarray, cv_embs: np.ndarray) -> np.ndarray:
@@ -512,9 +499,6 @@ with tab_ranking:
         col_controles = st.columns([1, 4])
         with col_controles[0]:
             # ❗ CORREÇÃO 4: O valor máximo (max_value) do Top N precisa ser o tamanho do cdf.
-            # O valor padrão é min(10, len(cdf)), mas o max_value deve ser len(cdf) 
-            # para que ele carregue o valor correto (40492)
-            # O bug da imagem (max 2) estava relacionado à falha de carregamento do CSV, corrigida acima.
             max_topn = len(cdf)
             default_topn = min(50, max_topn) # Sugestão: Top 50 por padrão
             top_n = st.number_input("Top N Candidatos", 1, max_topn, default_topn, key="topn_ranking")
@@ -651,8 +635,8 @@ with tab_ranking:
                         mime="text/csv",
                         key="dl_ranking"
                     )
-            else:
-                st.warning("Nenhuma vaga ou candidato disponível na base de dados carregada para ranking.")
+    else:
+        st.warning("Nenhuma vaga ou candidato disponível na base de dados carregada para ranking.")
 
 
 # ############## TAB 2: Bases de Dados ##############
@@ -665,6 +649,8 @@ with tab_bases:
 
     def _preview_df(df: pd.DataFrame, text_cols: list[str], max_chars: int = 300) -> pd.DataFrame:
         """Prepara um dataframe para visualização, truncando colunas de texto longas."""
+        if df.empty:
+            return df
         df = df.copy()
         view_cols = [c for c in df.columns if c not in text_cols] + text_cols
         dfv = df[view_cols].copy()
@@ -676,41 +662,52 @@ with tab_bases:
 
     # ---- Candidatos ----
     st.subheader("Candidatos")
-    st.metric("Total de Candidatos", len(cand_full)) # OK porque len(DataFrame vazio) = 0
+    st.metric("Total de Candidatos", len(cand_full))
     st.caption(f"Colunas concatenadas para match: **cv_text**")
     
     col_dl_c, col_prev_c = st.columns([1, 4])
     with col_dl_c:
         if not cand_full.empty:
-            # Usa StringIO para escrever o CSV em um buffer de string (menos consumo de memória)
-            csv_buffer = io.StringIO()
-            cand_full.to_csv(csv_buffer, index=False)
-        
+            # CORREÇÃO: Método simplificado e robusto para download
             st.download_button(
                 "💾 Baixar Candidatos (CSV)", 
-                csv_buffer.getvalue(), # Obtém a string do buffer (Streamlit lida com a codificação)
+                cand_full.to_csv(index=False),
                 file_name="candidatos_full.csv", 
                 mime="text/csv"
             )
         else:
             st.caption("Base de candidatos vazia ou não carregada.")
+    
+    with col_prev_c:
+        if st.checkbox("Mostrar Preview de Candidatos", key="preview_cand"):
+            if not cand_full.empty:
+                st.dataframe(_preview_df(cand_full, ["cv_text", "experiencia", "skills"]), use_container_width=True, height=300, hide_index=True)
+            else:
+                st.info("Nenhum dado de candidatos disponível para preview.")
 
     st.divider()
 
     # ---- Vagas ----
     st.subheader("Vagas")
-    vaga_full = st.session_state["vagas_df"]
     st.metric("Total de Vagas", len(vaga_full))
     st.caption(f"Colunas concatenadas para match: **vaga_text**")
 
     col_dl_v, col_prev_v = st.columns([1, 4])
     with col_dl_v:
-        st.download_button(
-            "💾 Baixar Vagas (CSV)", 
-            vaga_full.to_csv(index=False).encode("utf-8"),
-            file_name="vagas_full.csv", 
-            mime="text/csv"
-        )
+        if not vaga_full.empty:
+            # CORREÇÃO: Método simplificado e robusto para download
+            st.download_button(
+                "💾 Baixar Vagas (CSV)", 
+                vaga_full.to_csv(index=False),
+                file_name="vagas_full.csv", 
+                mime="text/csv"
+            )
+        else:
+            st.caption("Base de vagas vazia ou não carregada.")
+            
     with col_prev_v:
-        if st.checkbox("Mostrar Preview de Vagas"):
-            st.dataframe(_preview_df(vaga_full, ["vaga_text", "requisitos", "descricao"]), use_container_width=True, height=300, hide_index=True)
+        if st.checkbox("Mostrar Preview de Vagas", key="preview_vagas"):
+            if not vaga_full.empty:
+                st.dataframe(_preview_df(vaga_full, ["vaga_text", "requisitos", "descricao"]), use_container_width=True, height=300, hide_index=True)
+            else:
+                st.info("Nenhum dado de vagas disponível para preview.")

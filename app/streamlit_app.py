@@ -22,6 +22,7 @@ try:
 except Exception:
     XGBClassifier = None
 
+SAFE_BOOT = os.getenv("SAFE_BOOT", "true").lower() == "true"
 
 # ======================== CONFIG BÁSICA / CONSTANTES ========================
 APP_NAME = "RECRUT.AI 🚀"

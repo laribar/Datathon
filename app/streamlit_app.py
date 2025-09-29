@@ -1,779 +1,336 @@
-# ======================== IMPORTS ========================
-import os, re, json, hashlib, io
-from pathlib import Path
-from typing import List, Tuple, Optional
-import csv
-from typing import Optional 
-import numpy as np
-import pandas as pd
+# ==============================================================================
+# 1. IMPORTS E CONFIGURAÇÕES INICIAIS
+# ==============================================================================
 import streamlit as st
-import requests
+import pandas as pd
+import numpy as np
+import xgboost as xgb
+import s3fs
+import boto3
+import os
 import joblib
-# Imports necessários para S3 (boto3 é geralmente exigido por s3fs)
-import s3fs 
-import boto3 
 
-# Imports tolerantes (para não derrubar o app se a lib não existir)
-try:
-    import psutil
-except Exception:
-    psutil = None
+from sentence_transformers import SentenceTransformer
+from sklearn.preprocessing import LabelEncoder
+from typing import Dict, Any, List
 
-try:
-    from xgboost import XGBClassifier
-except Exception:
-    XGBClassifier = None
-
-SAFE_BOOT = os.getenv("SAFE_BOOT", "true").lower() == "true"
-
-# ======================== CONFIG BÁSICA / CONSTANTES ========================
-APP_NAME = "RECRUT.AI 🚀"
-APP_VERSION = "1.3.4 (Base Completa - S3 Ready)"
-
-# 1) A PRIMEIRA CHAMADA DE UI DO STREAMLIT DEVE SER set_page_config
+# Configuração da página Streamlit
 st.set_page_config(
-    page_title=APP_NAME,
-    page_icon=":chart_with_upwards_trend:",
+    page_title="Seletor de Talentos com IA",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# ======================== S3 CONFIG ========================
-def _aws_storage_options():
-    """Lê credenciais S3 do st.secrets (ou env) para s3fs."""
-    # lê de st.secrets se existir; senão tenta do ambiente
-    aws = st.secrets.get("aws", {})
-    return {
-        "key": aws.get("aws_access_key_id", os.getenv("AWS_ACCESS_KEY_ID")),
-        "secret": aws.get("aws_secret_access_key", os.getenv("AWS_SECRET_ACCESS_KEY")),
-        "client_kwargs": {"region_name": aws.get("region_name", os.getenv("AWS_DEFAULT_REGION", "us-east-2"))},
-    }
+# ==============================================================================
+# 2. VARIÁVEIS DE CONFIGURAÇÃO (S3, PATHS, ETC.)
+# ==============================================================================
+# Configurações do S3
+S3_BUCKET = "datathon-recruta"
+S3_DATA_PATH = f"s3://{S3_BUCKET}/data"
+S3_MODEL_PATH = f"s3://{S3_BUCKET}/modelo"
 
-AWS_BUCKET = st.secrets.get("aws", {}).get("bucket", os.getenv("AWS_BUCKET", "datathon-recruta"))
-S3_BASE = f"s3://{AWS_BUCKET}"
+# Nomes dos arquivos
+CANDIDATOS_FILE = "aplicante_clean.csv"
+VAGAS_FILE = "vagas_clean.csv"
+EMBEDDINGS_FILE = "candidatos.npy"
+MODEL_FILE = "modelo_match_xgboost.pkl"
+ENCODER_FILE = "encoder_le.pkl"
 
-# ======================== DETECÇÃO DE AMBIENTE ========================
-IS_DEPLOY = os.getenv("IS_DEPLOY", "false").lower() == "true"
+# Colunas para o embedding
+CV_TEXT_COL = 'cv_text'
+VAGA_TEXT_COL = 'vaga_text'
 
-# ======================== CONFIGURAÇÕES INICIAIS (Lógica Pura) ========================
+# ==============================================================================
+# 3. FUNÇÕES DE CACHE E CARREGAMENTO
+# ==============================================================================
 
-# Limiar padrão para "Aprovação" no ranking
-DEFAULT_LIMIAR = float(os.getenv("SCORE_LIMIAR", "0.75"))
-
-# Modelo: Pasta local do seu projeto (O seu sbert_encoder)
-MODEL_DIR = os.getenv("MODEL_DIR", "./models/sbert_encoder")
-MODEL_NAME = os.getenv("MODEL_NAME", f"Local_Custom:{MODEL_DIR}")
-HF_MODEL_NAME = os.getenv("HF_MODEL_NAME", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
-
-# Modelo XGBoost
-XGB_MODEL_NAME = os.getenv("XGB_MODEL_NAME", "modelo_match_xgboost.pkl")
-XGB_MODEL_PATH = Path(os.getenv("XGB_MODEL_PATH", "models")) / XGB_MODEL_NAME
-
-# Dados CSV (Local e URLs) - Mantido para fallback. Se o CSV for grande, priorize a URL do S3.
-BASE_CANDIDATOS_PATH = os.getenv("BASE_CANDIDATOS_PATH", "data/applicants_clean.csv")
-BASE_VAGAS_PATH = os.getenv("BASE_VAGAS_PATH", "data/vagas_clean.csv")
-
-# CANDIDATOS_CSV_URL e VAGAS_CSV_URL devem apontar para o S3 se o GitHub for um problema
-CANDIDATOS_CSV_URL = st.secrets.get("CANDIDATOS_CSV_URL", os.getenv("CANDIDATOS_CSV_URL", "https://raw.githubusercontent.com/laribar/Datathon/main/data/applicants_clean.csv"))
-VAGAS_CSV_URL = st.secrets.get("VAGAS_CSV_URL", os.getenv("VAGAS_CSV_URL", "https://raw.githubusercontent.com/laribar/Datathon/main/data/vagas_clean.csv"))
-
-
-# --- CHAVES S3 (NOVA PRIORIDADE) ---
-CAND_EMB_S3_KEY = st.secrets.get("CAND_EMB_S3_KEY", os.getenv("CAND_EMB_S3_KEY", "data/embeddings/candidatos.npy"))
-CAND_META_S3_KEY = st.secrets.get("CAND_META_S3_KEY", os.getenv("CAND_META_S3_KEY", "data/embeddings/candidatos.meta.json"))
-VAGA_EMB_S3_KEY = st.secrets.get("VAGA_EMB_S3_KEY", os.getenv("VAGA_EMB_S3_KEY", "data/embeddings/vagas.npy"))
-VAGA_META_S3_KEY = st.secrets.get("VAGA_META_S3_KEY", os.getenv("VAGA_META_S3_KEY", "data/embeddings/vagas.meta.json"))
-
-# Cache de embeddings: Remoto (URLs RAW do GitHub - Fallback)
-CAND_EMB_URL = os.getenv("CAND_EMB_URL", "https://raw.githubusercontent.com/laribar/Datathon/main/data/embeddings/candidatos.npy")
-CAND_META_URL = os.getenv("CAND_META_URL", "https://raw.githubusercontent.com/laribar/Datathon/main/data/embeddings/candidatos.meta.json")
-VAGA_EMB_URL = os.getenv("VAGA_EMB_URL", "https://raw.githubusercontent.com/laribar/Datathon/main/data/embeddings/vagas.npy")
-VAGA_META_URL = os.getenv("VAGA_META_URL", "https://raw.githubusercontent.com/laribar/Datathon/main/data/embeddings/vagas.meta.json")
-
-# Cache de embeddings: Local (Fallback)
-EMB_DIR = Path(os.getenv("EMB_DIR", "data/embeddings"))
-CAND_EMB_PATH = EMB_DIR / "candidatos.npy"
-CAND_META_PATH = EMB_DIR / "candidatos.meta.json"
-VAGA_EMB_PATH = EMB_DIR / "vagas.npy"
-VAGA_META_PATH = EMB_DIR / "vagas.meta.json"
-
-# Colunas de metadados dos candidatos a exibir no ranking (AJUSTE CONFORME SEU CSV)
-CAND_META_COLS = ["nome", "cidade", "experiencia", "skills", "id"]
-
-
-# --- Funções de Inicialização de Sistema (Apenas Python, SEM Streamlit) ---
-def setup_paths() -> str:
-    """Configura caminhos para compatibilidade com deploy e cria diretórios."""
-    base_path = (
-        os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
-    )
-    os.makedirs(os.path.join(base_path, "models"), exist_ok=True)
-    EMB_DIR.mkdir(parents=True, exist_ok=True)
-    return base_path
-
-
-def get_available_memory() -> float:
-    """Retorna a memória disponível em GB (Apenas lógica Python)."""
-    if psutil is None:
-        return 0.0
-    memory_info = psutil.virtual_memory()
-    return memory_info.available / (1024**3)
-
-
-# Chamadas de setup
-BASE_PATH = setup_paths()
-AVAILABLE_GB = get_available_memory()  # Checagem de memória feita antes da UI
-CAN_PROCEED = AVAILABLE_GB >= 2
-
-# Mensagem de modo deploy (depois do set_page_config)
-if IS_DEPLOY:
-    st.sidebar.info("🚀 Modo Deploy Ativo")
-
-
-# ======================== TEXT UTILS ========================
-_whitespace_re = re.compile(r"\s+")
-
-
-def clean_text(t: str) -> str:
-    """Limpa e normaliza texto (minúsculas e remoção de espaços extras)."""
-    if t is None:
-        return ""
-    t = t.strip().lower()
-    return _whitespace_re.sub(" ", t)
-
-
-def proportional_score(sim: float, limiar: float) -> float:
-    """Calcula o score de 0 a 100 baseado no limiar de aprovação."""
-    if limiar <= 0:
-        return 0.0
-    if sim >= limiar:
-        return 100.0
-    return max(0.0, (sim / limiar) * 100.0)
-
-
-def _concat_all_columns(df: pd.DataFrame, new_col_name: str) -> pd.DataFrame:
-    """Combina colunas de texto em uma única coluna 'new_col_name', tratando erros de colunas vazias."""
-    df = df.copy()
-
-    # 1. Identifica colunas a serem excluídas (exceto o próprio ID)
-    cols_to_exclude = {new_col_name, "indice_origem", "versao"}
-
-    # 2. Seleciona TODAS as outras colunas para concatenação
-    text_cols = [col for col in df.columns if col not in cols_to_exclude]
-
-    if not text_cols:
-        # ❗ TRATAMENTO DE ERRO
-        df[new_col_name] = ""
-        st.warning(
-            f"⚠️ A função de concatenação ({new_col_name}) não encontrou colunas válidas no DataFrame. Verifique a estrutura do CSV."
-        )
-        return df
-
-    # 3. Combina colunas: Converte para string e concatena
-    df[new_col_name] = df[text_cols].astype(str).agg(" ".join, axis=1)
-
-    # 4. Limpeza
-    df[new_col_name] = df[new_col_name].str.strip()
-    df[new_col_name] = df[new_col_name].apply(clean_text)
-
-    return df
-
-
-# ======================== DATA LOADERS ========================
-@st.cache_data(show_spinner=False)
-def _read_csv_local_or_url(local_path: str, url_env: Optional[str]) -> Optional[pd.DataFrame]:
-    """Carrega CSV da URL (Prioridade) ou do disco local (Fallback)."""
-    READ_CSV_PARAMS = {
-        "sep": ",",
-        "encoding": "utf-8",
-        "on_bad_lines": "skip",
-        "engine": "python",
-        "quoting": csv.QUOTE_MINIMAL,
-        "skipinitialspace": True,
-    }
-
-    if url_env:
-        try:
-            # Tenta carregar da URL (S3 ou GitHub RAW)
-            # O Pandas/fsspec gerencia URLs S3 se credenciais estiverem no ambiente/secrets
-            df = pd.read_csv(url_env, **READ_CSV_PARAMS, storage_options=_aws_storage_options())
-            st.info(f"🔗 Dados lidos da URL: {url_env} ({len(df)} registros)", icon="✅")
-            return df
-        except Exception:
-            pass
-
+@st.cache_resource(show_spinner="Carregando modelos (SBERT e XGBoost)...")
+def load_models():
+    """Carrega o modelo XGBoost e o LabelEncoder do S3."""
     try:
-        if os.path.exists(local_path):
-            df = pd.read_csv(local_path, **READ_CSV_PARAMS)
-            st.info(f"📂 Dados lidos do disco local: {local_path} ({len(df)} registros)", icon="✅")
-            return df
-    except Exception:
-        pass
+        # Carregar XGBoost
+        model_path = os.path.join(S3_MODEL_PATH, MODEL_FILE)
+        bst = joblib.load(model_path)
+        st.toast("Modelo XGBoost carregado com sucesso.", icon="✅")
+        st.markdown(f'<div style="background-color:#003300; padding:10px; border-radius:5px; color:white;">Modelo XGBoost carregado do disco/modelo/{MODEL_FILE}.</div>', unsafe_allow_html=True)
 
-    return None
-
-
-@st.cache_data(show_spinner="Carregando bases de dados...", ttl=None)
-def load_fixed_bases() -> Tuple[pd.DataFrame, pd.DataFrame, list]:
-    """Carrega as bases de candidatos e vagas e concatena colunas de texto."""
-    logs = []
-
-    # CANDIDATOS_CSV_URL pode ser uma URL S3 ou GitHub RAW
-    cand = _read_csv_local_or_url(BASE_CANDIDATOS_PATH, CANDIDATOS_CSV_URL)
-    vaga = _read_csv_local_or_url(BASE_VAGAS_PATH, VAGAS_CSV_URL)
-
-    # Lógica de fallback para DataFrame de amostra
-    if cand is None or cand.empty:
-        logs.append("⚠️ Não encontrei candidatos via URL ou local. Usando amostra.")
-        cand = pd.DataFrame(
-            {
-                "nome": ["Ana Silva", "Carlos Souza"],
-                "skills": ["Python Airflow Spark", "Java Spring SQL"],
-                "experiencia": ["3 anos em dados", "5 anos em backend"],
-                "cidade": ["São Paulo", "Rio de Janeiro"],
-                "id": [1, 2],
-            }
-        )
-    else:
-        logs.append(f"✅ Candidatos carregados: {len(cand)} registros.")
-
-    if vaga is None or vaga.empty:
-        logs.append("⚠️ Não encontrei vagas via URL ou local. Usando amostra.")
-        vaga = pd.DataFrame(
-            {
-                "titulo_vaga": ["Engenheira de Dados Senior", "Desenvolvedor Backend Java"],
-                "requisitos": ["Python, Spark, Airflow, AWS", "Java, Spring Boot, SQL, REST APIs"],
-                "descricao": [
-                    "Projetos de dados em ambiente cloud. Criação de pipelines ETL.",
-                    "Desenvolvimento de microserviços de alta performance.",
-                ],
-            }
-        )
-    else:
-        logs.append(f"✅ Vagas carregadas: {len(vaga)} registros.")
-
-    # Concatena colunas de texto para o SBERT
-    cand = _concat_all_columns(cand, "cv_text")
-    vaga = _concat_all_columns(vaga, "vaga_text")
-
-    logs.append(f"✅ Bases processadas: {len(cand)} candidatos e {len(vaga)} vagas.")
-
-    return cand, vaga, logs
-
-
-# ======================== EMBEDDING CACHE UTILS ========================
-@st.cache_data(show_spinner=False)
-def _hash_dataframe(df: pd.DataFrame) -> str:
-    """Gera um hash para o conteúdo de um DataFrame (usado para checagem de cache)."""
-    buf = df.to_csv(index=False).encode("utf-8")
-    return hashlib.md5(buf).hexdigest()
-
-# NOVO: Função para carregar embeddings do S3
-def _load_embeddings_s3(npy_key: Optional[str], meta_key: Optional[str]) -> Tuple[Optional[np.ndarray], dict]:
-    """Tenta carregar embeddings e metadados diretamente do S3."""
-    if not npy_key or not meta_key or not AWS_BUCKET:
-        return None, {}
-    
-    s3_npy_path = f"s3://{AWS_BUCKET}/{npy_key}"
-    s3_meta_path = f"s3://{AWS_BUCKET}/{meta_key}"
-    storage_options = _aws_storage_options()
-    
-    if not storage_options.get("key") or not storage_options.get("secret"):
-         # Sem credenciais, não tenta o S3
-         return None, {}
-
-    try:
-        # Cria o sistema de arquivos S3
-        fs = s3fs.S3FileSystem(**storage_options)
+        # Carregar LabelEncoder
+        encoder_path = os.path.join(S3_MODEL_PATH, ENCODER_FILE)
+        le = joblib.load(encoder_path)
         
-        # 1. Carrega o arquivo .meta.json (metadados)
-        with fs.open(s3_meta_path, 'r', encoding='utf-8') as f:
-             meta = json.load(f)
-             
-        # 2. Carrega o arquivo .npy (embeddings)
-        with fs.open(s3_npy_path, 'rb') as f:
-            embs = np.load(f)
-            
-        st.info(f"☁️ Cache de embeddings carregado via S3: {s3_npy_path}", icon="☁️")
-        return embs, meta
-        
-    except Exception:
-        # st.warning(f"Falha ao carregar embeddings do S3 ({s3_npy_path}): {e}", icon="❌") 
-        return None, {}
-
-
-def _save_embeddings(npy_path: Path, meta_path: Path, embs: np.ndarray, meta: dict) -> None:
-    """Tenta salvar embeddings e metadados no disco local."""
-    try:
-        np.save(npy_path, embs)
-        meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-        st.info(f"💾 Embeddings salvos no disco: {npy_path.name}", icon="💾")
-    except Exception:
-        # Silencia a falha em ambientes efêmeros (e.g., Streamlit Cloud)
-        st.warning(
-            f"⚠️ Falha ao salvar cache no disco ({npy_path.name}). Isso é normal em alguns deploys.",
-            icon="⚠️",
-        )
-
-
-def _load_embeddings_url(
-    npy_url: Optional[str], meta_url: Optional[str]
-) -> Tuple[Optional[np.ndarray], dict]:
-    """Tenta carregar embeddings via URL RAW do GitHub (fallback)."""
-    if not npy_url or not meta_url:
-        return None, {}
-    try:
-        # Carrega o arquivo .meta.json
-        meta_response = requests.get(meta_url, timeout=5)
-        if meta_response.status_code != 200:
-            return None, {}
-        meta = json.loads(meta_response.text)
-
-        # Carrega o arquivo .npy (binário)
-        npy_response = requests.get(npy_url, timeout=20)
-        if npy_response.status_code != 200:
-            return None, {}
-
-        embs = np.load(io.BytesIO(npy_response.content))
-        st.info(f"⚡ Cache de embeddings carregado via URL (GitHub): {npy_url}", icon="⚡")
-        return embs, meta
-    except Exception:
-        return None, {}
-
-
-def _load_embeddings_local(npy_path: Path, meta_path: Path) -> Tuple[Optional[np.ndarray], dict]:
-    """Tenta carregar embeddings do disco local (Fallback)."""
-    if not npy_path.exists() or not meta_path.exists():
-        return None, {}
-    try:
-        arr = np.load(npy_path)
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        st.info(f"💾 Cache de embeddings carregado do disco: {npy_path.name}", icon="💾")
-        return arr, meta
-    except Exception:
-        return None, {}
-
-
-def get_or_build_embeddings(df: pd.DataFrame, text_col: str, model_dir_or_flag: str) -> np.ndarray:
-    """Carrega do cache (S3 > URL > Local) ou constrói (lento) os embeddings."""
-    if text_col == "cv_text":
-        # Chaves S3
-        npy_s3, meta_s3 = CAND_EMB_S3_KEY, CAND_META_S3_KEY
-        # URLs RAW (GitHub)
-        npy_url, meta_url = CAND_EMB_URL, CAND_META_URL
-        # Caminhos Locais
-        npy_path, meta_path = CAND_EMB_PATH, CAND_META_PATH
-    else:
-        # Chaves S3
-        npy_s3, meta_s3 = VAGA_EMB_S3_KEY, VAGA_META_S3_KEY
-        # URLs RAW (GitHub)
-        npy_url, meta_url = VAGA_EMB_URL, VAGA_META_URL
-        # Caminhos Locais
-        npy_path, meta_path = VAGA_EMB_PATH, VAGA_META_PATH
-
-    # Metadados esperados
-    sig = _hash_dataframe(df[[text_col]])
-    meta_expected = {
-        "model_source": MODEL_DIR,
-        "text_col": text_col,
-        "signature": sig,
-        "version": APP_VERSION,
-    }
-
-    def _is_valid(embs: Optional[np.ndarray], meta: dict, df_: pd.DataFrame) -> bool:
-        """Verifica se o cache é válido."""
-        if model_dir_or_flag == "FORCE_REBUILD":
-            return False
-
-        return embs is not None and meta == meta_expected and embs.ndim == 2 and embs.shape[0] == len(df_)
-
-    # 1. Tenta carregar do cache S3 - PRIORIDADE MÁXIMA
-    embs, meta = _load_embeddings_s3(npy_s3, meta_s3)
-    if _is_valid(embs, meta, df):
-        return embs # type: ignore
-
-    # 2. Tenta carregar do cache remoto (URL GitHub)
-    embs, meta = _load_embeddings_url(npy_url, meta_url)
-    if _is_valid(embs, meta, df):
-        return embs # type: ignore
-
-    # 3. Tenta carregar do cache local
-    embs, meta = _load_embeddings_local(npy_path, meta_path)
-    if _is_valid(embs, meta, df):
-        return embs # type: ignore
-
-    # 4. Se falhar ou não existir, constrói (Lento)
-    st.warning(
-        f"⏳ Reconstruindo embeddings para '{text_col}' (Não há cache válido). Isso pode levar alguns minutos...",
-        icon="⏳",
-    )
-    texts = df[text_col].astype(str).tolist()
-
-    embs = embed_texts(texts, MODEL_DIR)
-
-    _save_embeddings(npy_path, meta_path, embs, meta_expected)  # Tenta salvar localmente para próxima vez
-    st.success(f"✅ Embeddings gerados para '{text_col}'.", icon="✅")
-    return embs
-
-
-# ======================== MODEL / ENCODER ========================
-@st.cache_resource(show_spinner="Carregando Modelo de Ranqueamento (XGBoost)...", ttl=None)
-def load_xgb_model(model_path: Path) -> Optional["XGBClassifier"]: # type: ignore
-    """Carrega o modelo XGBoost treinado a partir de um arquivo .pkl."""
-    # evita erro de import no type checker
-    global XGBClassifier
-    try:
-        from xgboost import XGBClassifier
-    except ImportError:
-        XGBClassifier = None
-
-    if XGBClassifier is None:
-        st.warning("⚠️ XGBoost indisponível. Ranqueando por Similaridade de Cosseno.")
-        return None
-    if not model_path.exists():
-        st.error(f"❌ Falha crítica: Modelo XGBoost não encontrado em: {model_path}")
-        return None
-
-    try:
-        model = joblib.load(model_path)
-        st.success(f"✅ Modelo XGBoost carregado de: **{model_path}**", icon="🧠")
-        return model
+        return bst, le
     except Exception as e:
-        st.error(f"❌ Falha ao carregar modelo XGBoost: {e}")
-        return None
-
-@st.cache_resource(show_spinner="Carregando Encoder (Priorizando Modelo Local)...", ttl=None)
-def load_model(model_path: str):
-    """Carrega o SentenceTransformer, priorizando o modelo local."""
-    try:
-        from sentence_transformers import SentenceTransformer
-    except ImportError:
-        st.error("❌ Falha crítica: A biblioteca 'sentence-transformers' não está instalada.")
+        st.error(f"Erro ao carregar modelos do S3. Verifique as permissões/caminho: {e}")
         st.stop()
 
+@st.cache_resource(show_spinner="Carregando Encoder (Priorizando Modelo Local)...")
+def load_encoder(local_model_name='all-MiniLM-L6-v2'):
+    """Carrega o modelo SBERT para geração de embeddings."""
     try:
-        model = SentenceTransformer(model_path)
-        return model
-    except Exception:
-        # Tenta fallback para o modelo Hugging Face
-        try:
-            model = SentenceTransformer(HF_MODEL_NAME)
-            st.warning("⚠️ Modelo padrão do Hugging Face carregado como fallback.", icon="⚠️")
-            return model
-        except Exception:
-            st.error("❌ Falha crítica: Não foi possível carregar o modelo de nenhuma fonte.")
-            st.stop()
+        # Tenta carregar o modelo SBERT localmente
+        encoder = SentenceTransformer(local_model_name)
+        st.toast("Encoder (SBERT) carregado com sucesso.", icon="✅")
+        return encoder
+    except Exception as e:
+        st.error(f"Erro ao carregar o modelo SBERT. Certifique-se de que a biblioteca 'sentence-transformers' está instalada e o modelo '{local_model_name}' existe ou está acessível: {e}")
+        st.stop()
 
+@st.cache_data(show_spinner="Carregando dados bases do disco...")
+def load_data():
+    """Carrega os DataFrames de candidatos e vagas do S3."""
+    cdf = pd.DataFrame()
+    vdf = pd.DataFrame()
+    log_messages = []
 
-@st.cache_data(show_spinner="Gerando embeddings em lote...", ttl=3600, max_entries=5)
-def embed_texts(texts: List[str], model_path: str) -> np.ndarray:
-    """Gera embeddings para uma lista de textos."""
-    model = load_model(model_path)
-    texts = [clean_text(t) for t in texts]
-    return model.encode(texts, normalize_embeddings=True, show_progress_bar=False, convert_to_numpy=True)
+    # Carregar Candidatos
+    try:
+        c_path = os.path.join(S3_DATA_PATH, CANDIDATOS_FILE)
+        cdf = pd.read_csv(c_path)
+        log_messages.append(f"✅ Dados de candidatos carregados: {len(cdf)} registros")
+    except Exception as e:
+        log_messages.append(f"⚠️ Não foi possível carregar o arquivo {CANDIDATOS_FILE}. Erro: {e}")
 
+    # Carregar Vagas
+    try:
+        v_path = os.path.join(S3_DATA_PATH, VAGAS_FILE)
+        vdf = pd.read_csv(v_path)
+        log_messages.append(f"✅ Dados de vagas carregados: {len(vdf)} registros")
+    except Exception as e:
+        log_messages.append(f"⚠️ Não foi possível carregar o arquivo {VAGAS_FILE}. Erro: {e}")
 
-@st.cache_data(show_spinner="Gerando embedding...", ttl=3600, max_entries=20)
-def embed_text(text: str, model_path: str) -> np.ndarray:
-    """Gera o embedding para um único texto, garantindo que o resultado seja 1D."""
-    model = load_model(model_path)
-    text_clean = clean_text(text)
-    emb = model.encode(text_clean, normalize_embeddings=True, show_progress_bar=False, convert_to_numpy=True)
-    return emb.flatten()
+    # Log de carregamento (exibido na UI)
+    st.subheader("Logs do Carregamento de Bases")
+    for msg in log_messages:
+        if "✅" in msg:
+            st.success(msg.replace("✅ ", "").strip())
+        elif "⚠️" in msg:
+            st.warning(msg.replace("⚠️ ", "").strip())
+        else:
+            st.info(msg)
 
+    # Verifica se os DFs estão vazios
+    if cdf.empty or vdf.empty:
+        st.error("Falha Crítica: Um ou ambos os DataFrames não puderam ser carregados. Verifique as configurações do S3.")
+        st.stop()
+    
+    return cdf, vdf
 
-def generate_xgb_features(vaga_emb: np.ndarray, cv_embs: np.ndarray) -> np.ndarray:
-    """
-    Gera o array de features NxF para o modelo XGBoost.
-    """
-    if vaga_emb.ndim == 1:
-        N = cv_embs.shape[0]
-        vaga_embs_repeated = np.repeat(vaga_emb[np.newaxis, :], N, axis=0)
-    else:
-        vaga_embs_repeated = vaga_emb
+@st.cache_data(show_spinner="Preparando e carregando embeddings iniciais (Cache S3 ou Reconstrução)...")
+def get_or_create_embeddings(df: pd.DataFrame, text_col: str, filename: str, encoder: SentenceTransformer) -> np.ndarray:
+    """Tenta carregar embeddings do S3/disco ou as gera e salva."""
+    
+    local_path = filename
+    s3_emb_path = os.path.join(S3_DATA_PATH, "embeddings", filename)
 
-    features = np.hstack(
-        [vaga_embs_repeated, cv_embs, np.abs(vaga_embs_repeated - cv_embs), vaga_embs_repeated * cv_embs]
-    )
-    return features
-
-
-# ======================== LÓGICA DE INICIALIZAÇÃO DO APP ========================
-with st.spinner("Carregando modelos (SBERT e XGBoost)..."):
-    load_model(MODEL_DIR)  # Carrega e cacheia o SBERT
-    xgb_ranking_model = load_xgb_model(XGB_MODEL_PATH)
-    st.session_state["xgb_ranking_model"] = xgb_ranking_model
-
-# 3. Carrega Bases Fixas (e concatena o texto)
-candidatos_df, vagas_df, _logs = load_fixed_bases()
-
-# Guarda bases na session_state
-st.session_state["candidatos_df"] = candidatos_df.copy()
-st.session_state["vagas_df"] = vagas_df.copy()
-
-# 4. Tenta carregar embeddings de base OU recalcula
-if "cache_loaded" not in st.session_state or not st.session_state["cache_loaded"]:
-    st.session_state["cache_loaded"] = False
-
-    if _logs:
-        with st.expander("Logs de Carregamento de Bases", expanded=False):
-            for m in _logs:
-                st.caption(m)
-
-    with st.spinner("⚡ Preparando e carregando embeddings iniciais (Cache S3 ou Reconstrução)..."):
-        try:
-            # Tenta carregar ou construir os embeddings dos candidatos
-            cand_embs_cache = get_or_build_embeddings(st.session_state["candidatos_df"], "cv_text", MODEL_DIR)
-            vaga_embs_cache = get_or_build_embeddings(st.session_state["vagas_df"], "vaga_text", MODEL_DIR)
-
-            if cand_embs_cache is not None and vaga_embs_cache is not None:
-                st.session_state["cache_loaded"] = True
-                st.session_state["cand_embs_cache"] = cand_embs_cache
-                st.session_state["vaga_embs_cache"] = vaga_embs_cache
+    # 1. Tentar carregar do S3
+    try:
+        with st.spinner(f"Cache de embeddings carregado do S3: {filename}"):
+            # Usando fsspec (s3fs) para carregar o arquivo do S3
+            fs = s3fs.S3FileSystem()
+            with fs.open(s3_emb_path, 'rb') as f:
+                embeddings = np.load(f)
+            
+            if embeddings.shape[0] == len(df):
+                st.info(f"💾 Cache de embeddings carregado do disco/candidatos.npy")
+                return embeddings
             else:
-                st.error("Não foi possível obter os embeddings para as bases fixas.")
-                st.session_state["cache_loaded"] = False
-                st.session_state["cand_embs_cache"] = None
-                st.session_state["vaga_embs_cache"] = None
+                st.warning("Cache S3 inválido (tamanho não bate). Reconstruindo embeddings.")
+    except Exception as e:
+        st.info(f"Não foi possível carregar o cache S3 ou disco ({e}). Reconstruindo embeddings...")
 
-        except Exception as e:
-            st.error(f"❌ Falha crítica ao carregar/gerar embeddings. Aplicativo interrompido. Erro: {e}")
-            st.session_state["cache_loaded"] = False
-            st.session_state["cand_embs_cache"] = None
-            st.session_state["vaga_embs_cache"] = None
-            st.stop()  # PARADA CRÍTICA: Impede que o Streamlit continue sem os embeddings
+    # 2. Gerar embeddings (se o cache falhou)
+    st.warning("Reconstruindo embeddings para 'cv_text' (Não há cache válido). Isso pode levar alguns minutos...")
+    
+    # Prepara os textos (garante que não há NaN)
+    texts = df[text_col].astype(str).tolist()
+    
+    # Geração dos embeddings em lotes (para eficiência)
+    with st.spinner("Gerando embeddings em lote..."):
+        # Ajuste o tamanho do lote conforme a memória disponível
+        batch_size = 32
+        embeddings = encoder.encode(
+            texts, 
+            show_progress_bar=True, 
+            convert_to_numpy=True, 
+            batch_size=batch_size
+        )
+    
+    # 3. Salvar no S3 para futuro cache
+    try:
+        with st.spinner(f"Salvando novos embeddings no S3 em {s3_emb_path}"):
+            # Salvar no disco local temporariamente (boa prática antes de subir)
+            np.save(local_path, embeddings)
 
+            # Usando boto3 para upload
+            s3 = boto3.client('s3')
+            s3.upload_file(local_path, S3_BUCKET, f"data/embeddings/{filename}")
+            
+            # Limpar arquivo local
+            os.remove(local_path)
+            
+            st.success("✅ Novos embeddings salvos no S3 com sucesso.")
+    except Exception as e:
+        st.error(f"Erro ao salvar novos embeddings no S3: {e}")
 
-# ======================== SIDEBAR E UI PRINCIPAL ========================
+    return embeddings
+
+# ==============================================================================
+# 4. FUNÇÃO PRINCIPAL DE PREDIÇÃO E MATCHING
+# ==============================================================================
+
+def predict_match_and_rank(vaga_embedding: np.ndarray, all_candidate_embeddings: np.ndarray, cdf: pd.DataFrame, bst: xgb.Booster, le: LabelEncoder) -> pd.DataFrame:
+    """Calcula similaridade, alimenta o XGBoost e classifica os candidatos."""
+    
+    # 1. Calcular Similaridade Cosseno (Medida de distância inicial)
+    # Expande o embedding da vaga para ter o mesmo número de linhas dos candidatos
+    vaga_emb_tiled = np.tile(vaga_embedding, (all_candidate_embeddings.shape[0], 1))
+    
+    # Concatena os embeddings para formar o X do modelo
+    X_predict = np.hstack([all_candidate_embeddings, vaga_emb_tiled])
+
+    # 2. Criar a Matriz DMatrix do XGBoost
+    dtest = xgb.DMatrix(X_predict)
+    
+    # 3. Fazer a Predição (Probabilidade de Match)
+    preds = bst.predict(dtest)
+    
+    # 4. Preparar o DataFrame de Resultados
+    # Adiciona a probabilidade de match ao DF de candidatos
+    results_df = cdf.copy()
+    results_df['probabilidade_match'] = preds
+    
+    # 5. Aplicar o LabelEncoder inverso na coluna 'status_le' (se houver)
+    # O modelo pode ter sido treinado com uma coluna target codificada
+    if 'status_le' in results_df.columns:
+        try:
+            results_df['status_original'] = le.inverse_transform(results_df['status_le'])
+        except Exception:
+            # Ignora se a coluna não está codificada ou o encoder falhar
+            pass
+    
+    # 6. Rankear
+    results_df = results_df.sort_values(by='probabilidade_match', ascending=False)
+    
+    return results_df
+
+# ==============================================================================
+# 5. EXECUÇÃO DO APLICATIVO STREAMLIT
+# ==============================================================================
+
+# Carregar Modelos e Dados
+bst, le = load_models()
+encoder = load_encoder()
+cdf, vdf = load_data()
+
+# ==============================================================================
+# TÍTULO E SIDEBAR
+# ==============================================================================
+
+st.title("Sistema de Match de Talentos (Candidato ↔ Vaga)")
+st.caption("Baseado em SBERT para Embeddings de CV/Vagas e XGBoost para Classificação de Match.")
+
+# ==============================================================================
+# SIDEBAR
+# ==============================================================================
+
 with st.sidebar:
-    st.markdown(f"## {APP_NAME} 🤖")
-    st.caption(f"Versão {APP_VERSION}")
-    st.write("---")
+    st.header("Configurações")
+    
+    # Seleção de Vaga
+    vaga_ids = vdf['id_vaga'].unique().tolist()
+    selected_vaga_id = st.selectbox(
+        "Selecione o ID da Vaga:",
+        vaga_ids,
+        index=0 # Seleciona a primeira vaga por padrão
+    )
+    
+    # Filtro de Candidatos (Exemplo: apenas para fins de demonstração, pode ser removido)
+    # status_list = ['todos'] + cdf['status'].unique().tolist()
+    # selected_status = st.selectbox("Filtrar Candidatos por Status:", status_list)
 
-    # Informações de Memória
-    st.subheader("🛠️ Status do Sistema")
-    st.write(f"💾 Memória disponível: {AVAILABLE_GB:.1f} GB")
-    if not CAN_PROCEED:
-        st.warning("⚠️ Memória limitada detectada. Algumas funcionalidades podem ser desativadas.")
+    # Número de Top Candidatos a exibir
+    top_n = st.slider("Número de Candidatos para Exibir:", 5, 100, 20)
+    
+    st.markdown("---")
+    st.write(f"Dados carregados: **{len(cdf)} Candidatos** e **{len(vdf)} Vagas**.")
+    st.markdown("---")
+    st.info("Para este app, é necessário que as credenciais do AWS (s3fs, boto3) estejam configuradas para acesso ao bucket.")
 
-    st.divider()
-    st.markdown("#### Configurações Globais")
-    st.write("**Encoder:**", MODEL_NAME)
-    limiar = st.slider("Limiar de Aprovação (Cosine)", 0.50, 0.95, DEFAULT_LIMIAR, 0.01)
+# ==============================================================================
+# CARREGAMENTO DE EMBEDDINGS (CACHE E GERAÇÃO)
+# ==============================================================================
 
-    st.divider()
-    st.markdown("#### 🔄 Cache de Embeddings")
-    cache_loaded = st.session_state["cache_loaded"]
-    st.info(f"Status do Cache: {'✅ Disponível' if cache_loaded else '❌ Indisponível'}")
+# Carrega/Gera embeddings dos candidatos (grande)
+candidate_embeddings = get_or_create_embeddings(
+    cdf, 
+    CV_TEXT_COL, 
+    EMBEDDINGS_FILE, 
+    encoder
+)
 
-    if st.button("⚡ Gerar/Atualizar Cache de Base", help="Força a reconstrução e tentativa de salvamento do cache local."):
-        with st.spinner("Gerando e salvando cache (candidatos e vagas)…"):
-            # Usa a flag "FORCE_REBUILD" para forçar o recálculo
-            st.session_state["cand_embs_cache"] = get_or_build_embeddings(
-                st.session_state["candidatos_df"], "cv_text", "FORCE_REBUILD"
-            )
-            st.session_state["vaga_embs_cache"] = get_or_build_embeddings(
-                st.session_state["vagas_df"], "vaga_text", "FORCE_REBUILD"
-            )
+# Carrega/Gera embeddings das vagas (pequeno, pode ser feito em tempo real, mas usamos cache aqui)
+vaga_embeddings = get_or_create_embeddings(
+    vdf, 
+    VAGA_TEXT_COL, 
+    'vagas.npy', 
+    encoder
+)
 
-            st.session_state["cache_loaded"] = True
+# ==============================================================================
+# LÓGICA DE MATCHING
+# ==============================================================================
 
-            st.success(f"Cache gerado. **Recarregue a página (F5)** para usar o novo cache na inicialização.")
+# 1. Filtrar a vaga selecionada
+vaga_row = vdf[vdf['id_vaga'] == selected_vaga_id].iloc[0]
+vaga_index = vdf.index.get_loc(vaga_row.name) # Posição da vaga no array de embeddings
+selected_vaga_emb = vaga_embeddings[vaga_index]
 
-# DEBUG: Informações de debug na sidebar
-st.sidebar.write("---")
-st.sidebar.subheader("📊 Debug Info")
-st.sidebar.write(f"Candidatos: {len(st.session_state['candidatos_df'])} registros")
-st.sidebar.write(f"Vagas: {len(st.session_state['vagas_df'])} registros")
-st.sidebar.write(f"XGBoost Status: {'✅ Pronto' if xgb_ranking_model else '❌ Ausente'}")
+# 2. Exibir a vaga selecionada
+st.subheader(f"Vaga Selecionada: {selected_vaga_id}")
+st.write(f"**Título:** {vaga_row['titulo_vaga']}")
+with st.expander("Ver Descrição Completa (vaga_text)"):
+    st.text(vaga_row[VAGA_TEXT_COL])
 
-# Exibir logs detalhados
-with st.sidebar.expander("Logs de Carregamento"):
-    for log in _logs:
-        st.sidebar.text(log)
+st.markdown("---")
+st.subheader(f"Resultados do Match (Top {top_n} Candidatos)")
 
+# 3. Executar o Matching e Ranking
+ranked_results_df = predict_match_and_rank(
+    selected_vaga_emb, 
+    candidate_embeddings, 
+    cdf, 
+    bst, 
+    le
+)
 
-# -------------------- UI Principal --------------------
-st.title("🔎 RECRUT.AI - Match Semântico (Especialização)")
-st.markdown(f"Análise de similaridade entre Curricula e Vagas usando **Sentence-BERT** (Modelo: **{MODEL_DIR}**)")
+# 4. Exibir o resultado
+# Seleciona as colunas mais relevantes para exibição
+cols_to_show = [
+    'id_candidato', 
+    'probabilidade_match', 
+    'status', 
+    'genero', 
+    'nivel_hierarquico', 
+    'salario_atual', 
+    'cv_text'
+]
+display_df = ranked_results_df.head(top_n)[cols_to_show].copy()
 
-tab_ranking, tab_bases = st.tabs(["📊 Ranking por Vaga", "📋 Bases de Dados"])
-
-
-# ############## TAB 1: Ranking por Vaga (Base Fixa) ##############
-with tab_ranking:
-    st.header("Ranking de Candidatos por Vaga (N×1)")
-    st.caption("Compara todos os candidatos da base fixa contra a vaga selecionada, utilizando embeddings.")
-
-    vdf = st.session_state["vagas_df"]
-    cdf = st.session_state["candidatos_df"]
-
-    def _vaga_label(row: pd.Series) -> str:
-        title = row.get("titulo_vaga") or ""
-        vt = str(row.get("vaga_text", ""))
-        base_txt = title.strip() or (vt[:80] + ("…" if len(vt) > 80 else ""))
-        return f"({row.name}) {base_txt}"
-
-    if len(vdf) > 0 and len(cdf) > 0:
-        col_sel, col_limpeza = st.columns([3, 1])
-        with col_sel:
-            options = vdf.apply(_vaga_label, axis=1).tolist()
-            idx = st.selectbox(
-                "Selecione a vaga para ranquear",
-                options=range(len(options)),
-                format_func=lambda i: options[i],
-                key="sel_vaga_ranking",
-            )
-
-        vaga_text_sel = str(vdf.iloc[idx]["vaga_text"])
-
-        with col_limpeza:
-            clean_rank = st.checkbox("Aplicar limpeza nos textos (Recalcula embeddings)", not cache_loaded, key="clean_ranking")
-            is_using_cache = cache_loaded and not clean_rank
-            st.caption(f"Cache de Embeddings: {'✅ Ativo (Base)' if is_using_cache else '❌ Inativo (Recálculo)'}")
-
-        with st.expander("Ver descrição completa da vaga"):
-            st.write(vaga_text_sel)
-
-        # --- Controles de Ranking ---
-        col_controles = st.columns([1, 4])
-        with col_controles[0]:
-            max_topn = len(cdf)
-            default_topn = min(50, max_topn)
-            top_n = st.number_input("Top N Candidatos", 1, max_topn, default_topn, key="topn_ranking")
-
-        with col_controles[1]:
-            if st.button("🔍 GERAR RANKING", key="btn_ranking", use_container_width=True):
-                with st.spinner("Calculando ranking..."):
-
-                    # 1. Embeddings: Prioriza cache ou recalcula
-                    if is_using_cache:
-                        emb_cvs = st.session_state["cand_embs_cache"]
-                        emb_vaga = st.session_state["vaga_embs_cache"][idx]
-                    else:
-                        # Recálculo forçado
-                        cvs = cdf["cv_text"].astype(str).tolist()
-                        emb_cvs = embed_texts(cvs, MODEL_DIR)
-                        emb_vaga = embed_text(vaga_text_sel, MODEL_DIR)
-
-                    # 2. CÁLCULO DO SCORE
-                    xgb_model = st.session_state.get("xgb_ranking_model")
-
-                    if xgb_model is not None:
-                        st.info("🧠 Usando modelo **XGBoost** para Ranqueamento por **Probabilidade de Match**.")
-
-                        features = generate_xgb_features(emb_vaga, emb_cvs)
-                        probs = xgb_model.predict_proba(features)[:, 1]
-
-                        scores_array = probs
-                        limiar_aprovacao = 0.50
-
-                        # Similaridade de Cosseno (via produto interno pois vetores estão normalizados)
-                        sims = emb_cvs @ emb_vaga.T
-
-                    else:
-                        st.warning("⚠️ Modelo XGBoost indisponível. Usando **Similaridade de Cosseno** para ranqueamento.")
-
-                        sims = emb_cvs @ emb_vaga.T
-                        scores_array = sims
-                        limiar_aprovacao = limiar  # Usa o limiar do slider
-
-                    # 3. Ordenação e Top N
-                    order = np.argsort(-scores_array)[:int(top_n)]
-
-                    # 4. Geração do DataFrame de Resultados
-                    rows = []
-                    for rank, i in enumerate(order, start=1):
-                        main_score = float(scores_array[i])
-                        cossine_sim = float(sims[i])
-
-                        if xgb_model is not None:
-                            score_porcentagem = round(main_score * 100, 2)
-                            aprovado = bool(main_score >= limiar_aprovacao)
-                        else:
-                            score_porcentagem = proportional_score(main_score, limiar_aprovacao)
-                            aprovado = bool(main_score >= limiar_aprovacao)
-
-                        row = {
-                            "Rank": rank,
-                            "Similaridade": round(cossine_sim, 6),
-                            "Score (%)": round(score_porcentagem, 2),
-                            "Aprovado": aprovado,
-                        }
-
-                        for col in CAND_META_COLS:
-                            if col in cdf.columns:
-                                val = cdf.iloc[i][col]
-                                if col in ["experiencia", "skills"] and isinstance(val, str):
-                                    row[col] = val[:100] + "..." if len(val) > 100 else val
-                                else:
-                                    row[col] = val
-
-                        rows.append(row)
-
-                    res = pd.DataFrame(rows)
-                    st.success(f"🎉 Ranking gerado: Top {len(res)} candidatos.")
-
-                    # --- Visualização de Resultados ---
-                    col_config = {
-                        "Similaridade": st.column_config.ProgressColumn(
-                            "Similaridade (Cosseno)", format="%.4f", min_value=0.0, max_value=1.0
-                        ),
-                        "Score (%)": st.column_config.ProgressColumn("Score Principal (%)", format="%f", min_value=0, max_value=100),
-                        "Aprovado": st.column_config.CheckboxColumn("Aprovado?", disabled=True),
-                        "nome": "Nome",
-                        "cidade": "Cidade",
-                        "experiencia": "Experiência (Resumo)",
-                        "skills": "Skills (Resumo)",
-                    }
-
-                    st.dataframe(res, use_container_width=True, hide_index=True, column_config=col_config)
-
-                    # Métricas de Resumo
-                    aprovados = res["Aprovado"].sum()
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Candidatos Aprovados", aprovados)
-                    with col2:
-                        st.metric("Taxa de Aprovação", f"{aprovados/len(res)*100:.1f}%")
-                    with col3:
-                        st.metric("Melhor Score", f"{res.iloc[0]['Score (%)']:.2f}%")
-
-                    st.download_button(
-                        "💾 Baixar Ranking (CSV)",
-                        res.to_csv(index=False).encode("utf-8"),
-                        file_name="ranking_por_vaga.csv",
-                        mime="text/csv",
-                        key="dl_ranking",
-                    )
-    else:
-        st.warning("Nenhuma vaga ou candidato disponível na base de dados carregada para ranking.")
+# Formatação
+display_df['probabilidade_match'] = (display_df['probabilidade_match'] * 100).round(2).astype(str) + '%'
+display_df['salario_atual'] = display_df['salario_atual'].apply(lambda x: f'R$ {x:,.2f}'.replace(',', 'X').replace('.', ',').replace('X', '.'))
 
 
-# ############## TAB 2: Bases de Dados ##############
-with tab_bases:
-    st.header("Visualização das Bases de Dados Carregadas")
+# Exibição
+st.dataframe(display_df, use_container_width=True, hide_index=True)
 
-    if not cdf.empty:
-        with st.expander(f"Candidatos ({len(cdf)} registros)", expanded=True):
-            st.dataframe(cdf, use_container_width=True)
-            st.caption("Colunas combinadas para embedding: **cv_text**")
-            st.download_button(
-                "Baixar CSV Candidatos",
-                cdf.to_csv(index=False).encode("utf-8"),
-                file_name="candidatos_processado.csv",
-                mime="text/csv",
-                key="dl_cand",
-            )
+# 5. Botão de Download (para o resultado completo)
+st.download_button(
+    f"Baixar CSV do Ranking Completo ({len(ranked_results_df)} registros)",
+    ranked_results_df.to_csv(index=False).encode("utf-8"),
+    file_name=f"ranking_vaga_{selected_vaga_id}.csv",
+    mime="text/csv",
+    key="dl_ranking",
+)
 
-    if not vdf.empty:
-        with st.expander(f"Vagas ({len(vdf)} registros)", expanded=True):
-            st.dataframe(vdf, use_container_width=True)
-            st.caption("Colunas combinadas para embedding: **vaga_text**")
-            st.download_button(
-                "Baixar CSV Vagas",
-                vdf.to_csv(index=False).encode("utf-8"),
-                file_name="vagas_processado.csv",
-                mime="text/csv",
-                key="dl_vaga",
-            )
+# FIM DO CÓDIGO

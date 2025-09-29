@@ -199,7 +199,13 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
             with fs.open(vagas_s3_path, 'rb') as f:
                 vdf = pd.read_csv(f)
             
-            # Limpeza básica das vagas
+            # 🎯 ADICIONE VERIFICAÇÃO DE COLUNAS AQUI:
+            required_vaga_cols = ['id_vaga', 'titulo_vaga', VAGA_TEXT_COL]
+            if not all(col in vdf.columns for col in required_vaga_cols):
+                 missing_cols = [col for col in required_vaga_cols if col not in vdf.columns]
+                 raise ValueError(f"O arquivo de vagas não contém as colunas necessárias: {missing_cols}")
+                
+            # Limpeza básica das vagas (agora que sabemos que as colunas existem)
             vdf = vdf.dropna(subset=[VAGA_TEXT_COL])
             vdf[VAGA_TEXT_COL] = vdf[VAGA_TEXT_COL].astype(str)
             
@@ -207,6 +213,8 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
 
     except Exception as e:
         log_messages.append(f"❌ Erro ao carregar vagas: {str(e)}")
+        # Se houver erro, garantimos que vdf seja vazio para falhar na validação final.
+        vdf = pd.DataFrame() 
 
     # Exibir logs de forma organizada
     with st.container():

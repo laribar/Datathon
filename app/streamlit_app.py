@@ -177,7 +177,7 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
             st.error(f"❌ Arquivo de candidatos não encontrado: s3://{candidatos_s3_path}")
         else:
             with fs.open(candidatos_s3_path, 'rb') as f:
-                cdf = pd.read_csv(f, nrows=_max_rows)
+                cdf = pd.read_csv(f, nrows=_max_rows, encoding='latin-1') 
             
             # Limpeza básica dos dados
             cdf = cdf.dropna(subset=[CV_TEXT_COL])
@@ -197,7 +197,7 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
             st.error(f"❌ Arquivo de vagas não encontrado: s3://{vagas_s3_path}")
         else:
             with fs.open(vagas_s3_path, 'rb') as f:
-                vdf = pd.read_csv(f)
+                vdf = pd.read_csv(f, encoding='latin-1')
             
             # 🎯 ADICIONE VERIFICAÇÃO DE COLUNAS AQUI:
             required_vaga_cols = ['id_vaga', 'titulo_vaga', VAGA_TEXT_COL]

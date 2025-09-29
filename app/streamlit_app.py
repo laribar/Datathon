@@ -52,22 +52,34 @@ ENCODER_FILE = "encoder_le.pkl"
 CV_TEXT_COL = 'cv_text'
 VAGA_TEXT_COL = 'vaga_text'
 
+# ==============================================================================
+# 2. VARIÁVEIS DE CONFIGURAÇÃO (S3, PATHS, ETC.) E INJEÇÃO DE SECRETS
+# ==============================================================================
+# ... (Seu código de constantes) ...
+
 # --- 🎯 CORREÇÃO CRÍTICA: INJEÇÃO DE SECRETS DO STREAMLIT CLOUD ---
-# Verifica se os segredos AWS foram configurados (no painel do Streamlit Cloud)
 if "aws" in st.secrets:
     try:
-        # Exporta as chaves para as variáveis de ambiente, que são lidas por boto3/s3fs
-        os.environ["AWS_ACCESS_KEY_ID"] = st.secrets["aws"]["AWS_ACCESS_KEY_ID"]
-        os.environ["AWS_SECRET_ACCESS_KEY"] = st.secrets["aws"]["AWS_SECRET_ACCESS_KEY"]
+        # Tenta pegar as chaves em MAIÚSCULAS (formato ideal)
+        access_key = st.secrets["aws"].get("AWS_ACCESS_KEY_ID")
+        secret_key = st.secrets["aws"].get("AWS_SECRET_ACCESS_KEY")
+        aws_region = st.secrets["aws"].get("AWS_REGION") or st.secrets["aws"].get("AWS_DEFAULT_REGION")
         
-        # Define a região padrão para S3FS/boto3
-        aws_region = st.secrets["aws"].get("AWS_REGION", "us-east-1")
+        # Se as chaves em maiúsculas falharem, tenta pegar em minúsculas (seu formato)
+        if not access_key:
+             access_key = st.secrets["aws"]["aws_access_key_id"]
+             secret_key = st.secrets["aws"]["aws_secret_access_key"]
+             aws_region = st.secrets["aws"].get("region_name")
+        
+        # Exporta as chaves para as variáveis de ambiente
+        os.environ["AWS_ACCESS_KEY_ID"] = access_key
+        os.environ["AWS_SECRET_ACCESS_KEY"] = secret_key
         os.environ["AWS_DEFAULT_REGION"] = aws_region
         
         logger.info(f"Credenciais AWS carregadas via st.secrets. Região: {aws_region}")
     except KeyError as e:
-        logger.error(f"Erro: Segredo AWS faltando: {e}. Verifique o formato no Streamlit Secrets.")
-        st.error(f"❌ Segredo AWS faltando. Verifique se o formato [aws] está correto. Erro: {e}")
+        logger.error(f"Erro: Segredo AWS faltando. Chave não encontrada: {e}. Verifique o formato TOML.")
+        st.error(f"❌ Segredo AWS faltando. Verifique se as chaves (ID, SECRET, REGION) estão no formato [aws] correto.")
         st.stop()
 # -----------------------------------------------------------------------------
 

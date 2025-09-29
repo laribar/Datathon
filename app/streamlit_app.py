@@ -41,7 +41,7 @@ S3_DATA_PATH = f"s3://{S3_BUCKET}/data"
 S3_MODEL_PATH = f"s3://{S3_BUCKET}/data/models"
 
 # Nomes dos arquivos
-CANDIDATOS_FILE = "aplicante_clean.csv"
+CANDIDATOS_FILE = "applicants_clean.csv"
 VAGAS_FILE = "vagas_clean.csv"
 EMBEDDINGS_FILE = "candidatos.npy"
 VAGAS_EMBEDDINGS_FILE = "vagas.npy"
@@ -227,7 +227,7 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
         1. Verifique se os arquivos existem no S3
         2. Verifique as permissões do bucket (erro 'Forbidden')
         3. Confirme os nomes dos arquivos:
-            - aplicante_clean.csv
+            - applicants_clean.csv
             - vagas_clean.csv
         """)
         st.stop()

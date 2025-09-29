@@ -17,36 +17,43 @@ A solução combina:
 PARA ACESSAR O APP:
 (https://recrutai.streamlit.app/)
 
+🔄 Fluxo Detalhado do Aplicativo RECRUT.AI
 1. USUÁRIO ABRE O APP
-   │
+│
+
 2. 🔐 VERIFICAÇÃO AWS
-   ├── Testa credenciais
-   ├── Lista arquivos no bucket
-   └── Exibe status da conexão
-   │
+├── Testa credenciais
+├── Lista arquivos no bucket
+└── Exibe status da conexão
+│
+
 3. 📥 CARREGAMENTO INICIAL
-   ├── Modelos ML (XGBoost, Encoder)
-   ├── Dados (Candidatos, Vagas)
-   └── Embeddings (Cache ou Geração)
-   │
+├── Modelos ML (XGBoost, Encoder)
+├── Dados (Candidatos, Vagas)
+└── Embeddings (Cache ou Geração)
+│
+
 4. 🎛️ INTERAÇÃO DO USUÁRIO
-   ├── Seleciona vaga
-   ├── Ajusta parâmetros
-   └── Dispara processamento
-   │
+├── Seleciona vaga
+├── Ajusta parâmetros
+└── Dispara processamento
+│
+
 5. 🔍 PROCESSAMENTO
-   ├── Recupera embedding da vaga
-   ├── Calcula matching com todos candidatos
-   ├── Ordena por probabilidade
-   └── Gera ranking
-   │
+├── Recupera embedding da vaga
+├── Calcula matching com todos candidatos
+├── Ordena por probabilidade
+└── Gera ranking
+│
+
 6. 📊 EXIBIÇÃO
-   ├── Mostra Top N candidatos
-   ├── Exibe métricas
-   └── Disponibiliza download
-   │
+├── Mostra Top N candidatos
+├── Exibe métricas
+└── Disponibiliza download
+│
+
 7. 💾 PERSISTÊNCIA
-   └── Salva novos embeddings no S3 (se gerados)
+└── Salva novos embeddings no S3 (se gerados)
 ---
 Os arquivos mais pesados foram colocados na AWS S3 para facilitar o Deploy via stramlit
 <img width="1722" height="575" alt="image" src="https://github.com/user-attachments/assets/7ad8d222-8f07-4b8d-8af2-382f7d38b19a" />

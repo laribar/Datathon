@@ -27,7 +27,7 @@ st.set_page_config(
 # Configurações do S3
 S3_BUCKET = "datathon-recrutai"
 S3_DATA_PATH = f"s3://{S3_BUCKET}/data"
-S3_MODEL_PATH = f"s3://{S3_BUCKET}/modelo"
+S3_MODEL_PATH = f"s3://{S3_BUCKET}/data/model"
 
 # Nomes dos arquivos
 CANDIDATOS_FILE = "aplicante_clean.csv"

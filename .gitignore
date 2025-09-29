@@ -24,4 +24,3 @@ data/processed/* # Ignora TUDO dentro de processed/...
 !data/processed/matches.csv
 !data/processed/no_matches.csv
 
-.streamlit/secrets.toml

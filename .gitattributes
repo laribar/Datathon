@@ -5,3 +5,4 @@ data/vagas.json filter=lfs diff=lfs merge=lfs -text
 data/applicants_clean.csv filter=lfs diff=lfs merge=lfs -text
 data/processed/pairs.parquet filter=lfs diff=lfs merge=lfs -text
 models/sbert_encoder/pytorch_model.bin filter=lfs diff=lfs merge=lfs -text
+data/embeddings/*.npy filter=lfs diff=lfs merge=lfs -text

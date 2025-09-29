@@ -12,3 +12,8 @@ torch>=2.1,<2.4
 
 # --- (Opcional) Ranqueamento com XGBoost ---
 xgboost>=2.0.3,<3
+
+
+boto3
+s3fs
+smart_open

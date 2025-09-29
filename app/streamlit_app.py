@@ -9,7 +9,9 @@ import pandas as pd
 import streamlit as st
 import requests
 import joblib
-from xgboost import XGBClassifier
+# Imports necessários para S3 (boto3 é geralmente exigido por s3fs)
+import s3fs 
+import boto3 
 
 # Imports tolerantes (para não derrubar o app se a lib não existir)
 try:
@@ -26,7 +28,7 @@ SAFE_BOOT = os.getenv("SAFE_BOOT", "true").lower() == "true"
 
 # ======================== CONFIG BÁSICA / CONSTANTES ========================
 APP_NAME = "RECRUT.AI 🚀"
-APP_VERSION = "1.3.4 (Base Completa)"
+APP_VERSION = "1.3.4 (Base Completa - S3 Ready)"
 
 # 1) A PRIMEIRA CHAMADA DE UI DO STREAMLIT DEVE SER set_page_config
 st.set_page_config(
@@ -35,6 +37,20 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# ======================== S3 CONFIG ========================
+def _aws_storage_options():
+    """Lê credenciais S3 do st.secrets (ou env) para s3fs."""
+    # lê de st.secrets se existir; senão tenta do ambiente
+    aws = st.secrets.get("aws", {})
+    return {
+        "key": aws.get("aws_access_key_id", os.getenv("AWS_ACCESS_KEY_ID")),
+        "secret": aws.get("aws_secret_access_key", os.getenv("AWS_SECRET_ACCESS_KEY")),
+        "client_kwargs": {"region_name": aws.get("region_name", os.getenv("AWS_DEFAULT_REGION", "us-east-2"))},
+    }
+
+AWS_BUCKET = st.secrets.get("aws", {}).get("bucket", os.getenv("AWS_BUCKET", "datathon-recruta"))
+S3_BASE = f"s3://{AWS_BUCKET}"
 
 # ======================== DETECÇÃO DE AMBIENTE ========================
 IS_DEPLOY = os.getenv("IS_DEPLOY", "false").lower() == "true"
@@ -53,13 +69,22 @@ HF_MODEL_NAME = os.getenv("HF_MODEL_NAME", "sentence-transformers/paraphrase-mul
 XGB_MODEL_NAME = os.getenv("XGB_MODEL_NAME", "modelo_match_xgboost.pkl")
 XGB_MODEL_PATH = Path(os.getenv("XGB_MODEL_PATH", "models")) / XGB_MODEL_NAME
 
-# Dados CSV (Local e URLs)
+# Dados CSV (Local e URLs) - Mantido para fallback. Se o CSV for grande, priorize a URL do S3.
 BASE_CANDIDATOS_PATH = os.getenv("BASE_CANDIDATOS_PATH", "data/applicants_clean.csv")
 BASE_VAGAS_PATH = os.getenv("BASE_VAGAS_PATH", "data/vagas_clean.csv")
-CANDIDATOS_CSV_URL = os.getenv("CANDIDATOS_CSV_URL", "https://raw.githubusercontent.com/laribar/Datathon/main/data/applicants_clean.csv")
-VAGAS_CSV_URL = os.getenv("VAGAS_CSV_URL", "https://raw.githubusercontent.com/laribar/Datathon/main/data/vagas_clean.csv")
 
-# Cache de embeddings: Remoto (URLs RAW do GitHub - PRIORIDADE MÁXIMA)
+# CANDIDATOS_CSV_URL e VAGAS_CSV_URL devem apontar para o S3 se o GitHub for um problema
+CANDIDATOS_CSV_URL = st.secrets.get("CANDIDATOS_CSV_URL", os.getenv("CANDIDATOS_CSV_URL", "https://raw.githubusercontent.com/laribar/Datathon/main/data/applicants_clean.csv"))
+VAGAS_CSV_URL = st.secrets.get("VAGAS_CSV_URL", os.getenv("VAGAS_CSV_URL", "https://raw.githubusercontent.com/laribar/Datathon/main/data/vagas_clean.csv"))
+
+
+# --- CHAVES S3 (NOVA PRIORIDADE) ---
+CAND_EMB_S3_KEY = st.secrets.get("CAND_EMB_S3_KEY", os.getenv("CAND_EMB_S3_KEY", "data/embeddings/candidatos.npy"))
+CAND_META_S3_KEY = st.secrets.get("CAND_META_S3_KEY", os.getenv("CAND_META_S3_KEY", "data/embeddings/candidatos.meta.json"))
+VAGA_EMB_S3_KEY = st.secrets.get("VAGA_EMB_S3_KEY", os.getenv("VAGA_EMB_S3_KEY", "data/embeddings/vagas.npy"))
+VAGA_META_S3_KEY = st.secrets.get("VAGA_META_S3_KEY", os.getenv("VAGA_META_S3_KEY", "data/embeddings/vagas.meta.json"))
+
+# Cache de embeddings: Remoto (URLs RAW do GitHub - Fallback)
 CAND_EMB_URL = os.getenv("CAND_EMB_URL", "https://raw.githubusercontent.com/laribar/Datathon/main/data/embeddings/candidatos.npy")
 CAND_META_URL = os.getenv("CAND_META_URL", "https://raw.githubusercontent.com/laribar/Datathon/main/data/embeddings/candidatos.meta.json")
 VAGA_EMB_URL = os.getenv("VAGA_EMB_URL", "https://raw.githubusercontent.com/laribar/Datathon/main/data/embeddings/vagas.npy")
@@ -169,7 +194,9 @@ def _read_csv_local_or_url(local_path: str, url_env: Optional[str]) -> Optional[
 
     if url_env:
         try:
-            df = pd.read_csv(url_env, **READ_CSV_PARAMS)
+            # Tenta carregar da URL (S3 ou GitHub RAW)
+            # O Pandas/fsspec gerencia URLs S3 se credenciais estiverem no ambiente/secrets
+            df = pd.read_csv(url_env, **READ_CSV_PARAMS, storage_options=_aws_storage_options())
             st.info(f"🔗 Dados lidos da URL: {url_env} ({len(df)} registros)", icon="✅")
             return df
         except Exception:
@@ -191,6 +218,7 @@ def load_fixed_bases() -> Tuple[pd.DataFrame, pd.DataFrame, list]:
     """Carrega as bases de candidatos e vagas e concatena colunas de texto."""
     logs = []
 
+    # CANDIDATOS_CSV_URL pode ser uma URL S3 ou GitHub RAW
     cand = _read_csv_local_or_url(BASE_CANDIDATOS_PATH, CANDIDATOS_CSV_URL)
     vaga = _read_csv_local_or_url(BASE_VAGAS_PATH, VAGAS_CSV_URL)
 
@@ -240,6 +268,39 @@ def _hash_dataframe(df: pd.DataFrame) -> str:
     buf = df.to_csv(index=False).encode("utf-8")
     return hashlib.md5(buf).hexdigest()
 
+# NOVO: Função para carregar embeddings do S3
+def _load_embeddings_s3(npy_key: Optional[str], meta_key: Optional[str]) -> Tuple[Optional[np.ndarray], dict]:
+    """Tenta carregar embeddings e metadados diretamente do S3."""
+    if not npy_key or not meta_key or not AWS_BUCKET:
+        return None, {}
+    
+    s3_npy_path = f"s3://{AWS_BUCKET}/{npy_key}"
+    s3_meta_path = f"s3://{AWS_BUCKET}/{meta_key}"
+    storage_options = _aws_storage_options()
+    
+    if not storage_options.get("key") or not storage_options.get("secret"):
+         # Sem credenciais, não tenta o S3
+         return None, {}
+
+    try:
+        # Cria o sistema de arquivos S3
+        fs = s3fs.S3FileSystem(**storage_options)
+        
+        # 1. Carrega o arquivo .meta.json (metadados)
+        with fs.open(s3_meta_path, 'r', encoding='utf-8') as f:
+             meta = json.load(f)
+             
+        # 2. Carrega o arquivo .npy (embeddings)
+        with fs.open(s3_npy_path, 'rb') as f:
+            embs = np.load(f)
+            
+        st.info(f"☁️ Cache de embeddings carregado via S3: {s3_npy_path}", icon="☁️")
+        return embs, meta
+        
+    except Exception:
+        # st.warning(f"Falha ao carregar embeddings do S3 ({s3_npy_path}): {e}", icon="❌") 
+        return None, {}
+
 
 def _save_embeddings(npy_path: Path, meta_path: Path, embs: np.ndarray, meta: dict) -> None:
     """Tenta salvar embeddings e metadados no disco local."""
@@ -258,7 +319,7 @@ def _save_embeddings(npy_path: Path, meta_path: Path, embs: np.ndarray, meta: di
 def _load_embeddings_url(
     npy_url: Optional[str], meta_url: Optional[str]
 ) -> Tuple[Optional[np.ndarray], dict]:
-    """Tenta carregar embeddings via URL RAW do GitHub."""
+    """Tenta carregar embeddings via URL RAW do GitHub (fallback)."""
     if not npy_url or not meta_url:
         return None, {}
     try:
@@ -274,7 +335,7 @@ def _load_embeddings_url(
             return None, {}
 
         embs = np.load(io.BytesIO(npy_response.content))
-        st.info(f"⚡ Cache de embeddings carregado via URL: {npy_url}", icon="⚡")
+        st.info(f"⚡ Cache de embeddings carregado via URL (GitHub): {npy_url}", icon="⚡")
         return embs, meta
     except Exception:
         return None, {}
@@ -293,26 +354,24 @@ def _load_embeddings_local(npy_path: Path, meta_path: Path) -> Tuple[Optional[np
         return None, {}
 
 
-# ❗ CORREÇÃO CRÍTICA AQUI: O model_source no metadado sempre usa MODEL_DIR,
-# e a flag "FORCE_REBUILD" é usada apenas para controle de fluxo interno.
 def get_or_build_embeddings(df: pd.DataFrame, text_col: str, model_dir_or_flag: str) -> np.ndarray:
-    """Carrega do cache (URL > Local) ou constrói (lento) os embeddings."""
+    """Carrega do cache (S3 > URL > Local) ou constrói (lento) os embeddings."""
     if text_col == "cv_text":
-        npy_path, meta_path, npy_url, meta_url = (
-            CAND_EMB_PATH,
-            CAND_META_PATH,
-            CAND_EMB_URL,
-            CAND_META_URL,
-        )
+        # Chaves S3
+        npy_s3, meta_s3 = CAND_EMB_S3_KEY, CAND_META_S3_KEY
+        # URLs RAW (GitHub)
+        npy_url, meta_url = CAND_EMB_URL, CAND_META_URL
+        # Caminhos Locais
+        npy_path, meta_path = CAND_EMB_PATH, CAND_META_PATH
     else:
-        npy_path, meta_path, npy_url, meta_url = (
-            VAGA_EMB_PATH,
-            VAGA_META_PATH,
-            VAGA_EMB_URL,
-            VAGA_META_URL,
-        )
+        # Chaves S3
+        npy_s3, meta_s3 = VAGA_EMB_S3_KEY, VAGA_META_S3_KEY
+        # URLs RAW (GitHub)
+        npy_url, meta_url = VAGA_EMB_URL, VAGA_META_URL
+        # Caminhos Locais
+        npy_path, meta_path = VAGA_EMB_PATH, VAGA_META_PATH
 
-    # Metadados esperados (usa o MODEL_DIR real, não a flag de rebuild)
+    # Metadados esperados
     sig = _hash_dataframe(df[[text_col]])
     meta_expected = {
         "model_source": MODEL_DIR,
@@ -323,24 +382,27 @@ def get_or_build_embeddings(df: pd.DataFrame, text_col: str, model_dir_or_flag: 
 
     def _is_valid(embs: Optional[np.ndarray], meta: dict, df_: pd.DataFrame) -> bool:
         """Verifica se o cache é válido."""
-        # Se a flag de força-rebuild for passada, o cache é inválido.
         if model_dir_or_flag == "FORCE_REBUILD":
             return False
 
-        # Checa se o conteúdo do meta.json e o tamanho do NPY batem
         return embs is not None and meta == meta_expected and embs.ndim == 2 and embs.shape[0] == len(df_)
 
-    # 1. Tenta carregar do cache remoto (URL) - PRIORIDADE MÁXIMA
+    # 1. Tenta carregar do cache S3 - PRIORIDADE MÁXIMA
+    embs, meta = _load_embeddings_s3(npy_s3, meta_s3)
+    if _is_valid(embs, meta, df):
+        return embs # type: ignore
+
+    # 2. Tenta carregar do cache remoto (URL GitHub)
     embs, meta = _load_embeddings_url(npy_url, meta_url)
     if _is_valid(embs, meta, df):
-        return embs  # type: ignore
+        return embs # type: ignore
 
-    # 2. Tenta carregar do cache local
+    # 3. Tenta carregar do cache local
     embs, meta = _load_embeddings_local(npy_path, meta_path)
     if _is_valid(embs, meta, df):
-        return embs  # type: ignore
+        return embs # type: ignore
 
-    # 3. Se falhar ou não existir, constrói (Lento)
+    # 4. Se falhar ou não existir, constrói (Lento)
     st.warning(
         f"⏳ Reconstruindo embeddings para '{text_col}' (Não há cache válido). Isso pode levar alguns minutos...",
         icon="⏳",
@@ -458,7 +520,7 @@ if "cache_loaded" not in st.session_state or not st.session_state["cache_loaded"
             for m in _logs:
                 st.caption(m)
 
-    with st.spinner("⚡ Preparando e carregando embeddings iniciais (Cache ou Reconstrução)..."):
+    with st.spinner("⚡ Preparando e carregando embeddings iniciais (Cache S3 ou Reconstrução)..."):
         try:
             # Tenta carregar ou construir os embeddings dos candidatos
             cand_embs_cache = get_or_build_embeddings(st.session_state["candidatos_df"], "cv_text", MODEL_DIR)

@@ -1,10 +1,9 @@
 [server]
-maxUploadSize = 400
+maxMessageSize = 600
+enableXsrfProtection = true
+enableCORS = true
 
-# Cache mais agressivo
-[runner]
-magicEnabled = false
+[client]
+showErrorDetails = true
 
-[global]
-developmentMode = false
 

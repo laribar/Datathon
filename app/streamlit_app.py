@@ -25,7 +25,7 @@ st.set_page_config(
 # 2. VARIÁVEIS DE CONFIGURAÇÃO (S3, PATHS, ETC.)
 # ==============================================================================
 # Configurações do S3
-S3_BUCKET = "datathon-recruta"
+S3_BUCKET = "datathon-recrutai"
 S3_DATA_PATH = f"s3://{S3_BUCKET}/data"
 S3_MODEL_PATH = f"s3://{S3_BUCKET}/modelo"
 

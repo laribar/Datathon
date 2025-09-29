@@ -1,15 +1,20 @@
 import os, re, json, hashlib, io 
 from pathlib import Path
 from typing import List, Tuple
-# Importações essenciais e bibliotecas de sistema/IO
 import joblib 
+import psutil
 from xgboost import XGBClassifier 
 import numpy as np
 import pandas as pd
 import streamlit as st
 import requests 
-from scipy.spatial.distance import cosine 
-import psutil # Mantenha todas as importações juntas
+from scipy.spatial.distance import cosine
+
+# ======================== DETECÇÃO DE AMBIENTE ========================
+IS_DEPLOY = os.getenv("IS_DEPLOY", "false").lower() == "true"
+
+if IS_DEPLOY:
+    st.sidebar.info("🚀 Modo Deploy Ativo")
 
 # ======================== CONFIGURAÇÕES INICIAIS (Lógica Pura) ========================
 
@@ -31,14 +36,14 @@ XGB_MODEL_PATH = Path(os.getenv("XGB_MODEL_PATH", "models")) / XGB_MODEL_NAME
 # Dados CSV (Local e URLs)
 BASE_CANDIDATOS_PATH = os.getenv("BASE_CANDIDATOS_PATH", "data/applicants_clean.csv")
 BASE_VAGAS_PATH = os.getenv("BASE_VAGAS_PATH", "data/vagas_clean.csv")
-CANDIDATOS_CSV_URL = os.getenv("CANDIDATOS_CSV_URL", "https://raw.githubusercontent.com/janbar/Datathon/main/data/applicants_clean.csv") 
-VAGAS_CSV_URL = os.getenv("VAGAS_CSV_URL", "https://raw.githubusercontent.com/janbar/Datathon/main/data/vagas_clean.csv") 
+CANDIDATOS_CSV_URL = os.getenv("CANDIDATOS_CSV_URL", "https://raw.githubusercontent.com/laribar/Datathon/main/data/applicants_clean.csv") 
+VAGAS_CSV_URL = os.getenv("VAGAS_CSV_URL", "https://raw.githubusercontent.com/laribar/Datathon/main/data/vagas_clean.csv") 
 
 # Cache de embeddings: Remoto (URLs RAW do GitHub - PRIORIDADE MÁXIMA)
-CAND_EMB_URL = os.getenv("CAND_EMB_URL", "https://raw.githubusercontent.com/janbar/Datathon/main/data/embeddings/candidatos.npy") 
-CAND_META_URL = os.getenv("CAND_META_URL", "https://raw.githubusercontent.com/janbar/Datathon/main/data/embeddings/candidatos.meta.json")
-VAGA_EMB_URL = os.getenv("VAGA_EMB_URL", "https://raw.githubusercontent.com/janbar/Datathon/main/data/embeddings/vagas.npy") 
-VAGA_META_URL = os.getenv("VAGA_META_URL", "https://raw.githubusercontent.com/janbar/Datathon/main/data/embeddings/vagas.meta.json") 
+CAND_EMB_URL = os.getenv("CAND_EMB_URL", "https://raw.githubusercontent.com/laribar/Datathon/main/data/embeddings/candidatos.npy") 
+CAND_META_URL = os.getenv("CAND_META_URL", "https://raw.githubusercontent.com/laribar/Datathon/main/data/embeddings/candidatos.meta.json")
+VAGA_EMB_URL = os.getenv("VAGA_EMB_URL", "https://raw.githubusercontent.com/laribar/Datathon/main/data/embeddings/vagas.npy") 
+VAGA_META_URL = os.getenv("VAGA_META_URL", "https://raw.githubusercontent.com/laribar/Datathon/main/data/embeddings/vagas.meta.json") 
 
 # Cache de embeddings: Local (Fallback)
 EMB_DIR = Path(os.getenv("EMB_DIR", "data/embeddings"))

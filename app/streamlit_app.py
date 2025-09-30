@@ -955,7 +955,7 @@ def main():
         except:
              pass 
 
-    #st.sidebar.image("logo.png", use_container_width=True)
+    st.sidebar.image("logo.png", use_container_width=True)
     st.sidebar.title("Navegação")
     
     # 1. Carregamento de Dados

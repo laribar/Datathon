@@ -207,7 +207,7 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
         if missing_cols:
             raise KeyError(f"Candidatos sem colunas: {missing_cols}")
 
-        cdf = cdf.dropna(subset=required_candidato_cols)
+        cdf = cdf.dropna(subset=required_candidato_cols).reset_index(drop=True)
         cdf[CV_TEXT_COL] = cdf[CV_TEXT_COL].astype(str)
         
         # 🟢 CORREÇÃO CRÍTICA: Garante índice posicional contínuo
@@ -250,7 +250,8 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
         else:
             raise ValueError(f"Nenhuma coluna base encontrada para criar '{VAGA_TEXT_COL}'.")
 
-        vdf = vdf.dropna(subset=[VAGA_TEXT_COL, VAGA_ID_COL])
+        vdf = vdf.dropna(subset=[VAGA_TEXT_COL, VAGA_ID_COL]).reset_index(drop=True)
+
         
         # 🟢 CORREÇÃO: Garante índice posicional contínuo
         vdf = vdf.reset_index(drop=True)
@@ -301,10 +302,14 @@ def get_or_create_embeddings(
         with st.spinner(f"☁️ Carregando embeddings do S3: {filename}"):
             with fs.open(s3_emb_path, "rb") as f:
                 embeddings = np.load(f)
-        # normaliza (idempotente) e garante dtype
-        embeddings = _l2_normalize(embeddings.astype("float32"))
-        st.session_state[cache_key] = embeddings
-        return embeddings
+        # Se o shape não bate com o df atual, vamos ignorar o cache e recomputar
+        if embeddings.shape[0] == len(df):
+            embeddings = _l2_normalize(embeddings.astype("float32"))
+            st.session_state[cache_key] = embeddings
+            return embeddings
+        else:
+            st.warning(f"Cache de embeddings desatualizado para {filename}: {embeddings.shape[0]} ≠ {len(df)}. Recalculando...")
+
 
     # 2) Gerar novos embeddings
     texts = df[text_col].astype(str).tolist()
@@ -359,25 +364,25 @@ def predict_match_and_rank(
     top_k: int = 1000,
 ) -> pd.DataFrame:
     """
-    Calcula matching e ranking de forma otimizada.
-    CORREÇÃO: Garante a forma de entrada (1536 features) esperada pelo modelo bst.
+    Calcula matching e ranking de forma otimizada e segura contra desalinhamentos.
     """
+    # Checagens básicas
     if cdf.empty or all_candidate_embeddings.size == 0:
-        # Retorna DataFrame vazio se não houver dados
         return pd.DataFrame()
 
-    # 1. Pré-filtragem de candidatos (otimização por similaridade)
-    # similaridade por produto interno (assumindo normalização L2 prévia)
-    sims = all_candidate_embeddings @ vaga_embedding.astype("float32")
-    k = min(top_k, len(sims))
-    
-    # 🚨 NOTA: Garantia que k seja > 0 para evitar erro se sims for vazio (embora o if acima cubra)
-    if k == 0:
+    # Garante que não vamos indexar além do limite
+    n_cand = min(len(cdf), all_candidate_embeddings.shape[0])
+    if n_cand == 0:
         return pd.DataFrame()
-        
+
+    cand_emb = all_candidate_embeddings[:n_cand]
+    cdf_safe = cdf.iloc[:n_cand].reset_index(drop=True)
+
+    # similaridade por produto interno (assumindo normalização L2 prévia)
+    sims = cand_emb @ vaga_embedding.astype("float32")
+    k = min(top_k, n_cand)
     top_idx = np.argpartition(sims, -k)[-k:]
-    # Ordenação decrescente no subset
-    top_idx = top_idx[np.argsort(-sims[top_idx])] 
+    top_idx = top_idx[np.argsort(-sims[top_idx])]
 
     # 2. Construção da Matriz de Predição (X_predict)
     X_left = all_candidate_embeddings[top_idx]
@@ -415,7 +420,7 @@ def predict_match_and_rank(
 
     # 4. Formatação e Ranking
     # ✅ CORREÇÃO GARANTIDA: O cdf agora tem índice alinhado ao top_idx
-    results_df = cdf.iloc[top_idx].copy()
+    results_df = cdf_safe.iloc[top_idx].copy()
     results_df["probabilidade_match"] = predictions.astype(np.float32, copy=False)
     results_df = results_df.sort_values("probabilidade_match", ascending=False).reset_index(drop=True)
     results_df["rank"] = np.arange(1, len(results_df) + 1, dtype=int)

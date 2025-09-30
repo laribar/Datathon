@@ -66,7 +66,6 @@ VAGA_TEXT_COL = "vaga_text"
 
 # NOVO: Colunas de metadados dos candidatos para exibição na UI
 CANDIDATO_METADATA_COLS = [
-    # ... colunas que já estavam ...
     "cidade",
     "estado",
     "pais",
@@ -77,13 +76,12 @@ CANDIDATO_METADATA_COLS = [
     "ultima_experiencia",
     "email",
     "linkedin",
-    "nome",               # Novo
-    "endereco",           # Novo
-    "nivel_academico",    # Novo
-    "remuneracao",        # Novo
-    "local",              # Novo (para endereço)
-    "email_pessoal",      # Novo (para contatos)
-    # ...
+    "nome",               
+    "endereco",           
+    "nivel_academico",    
+    "remuneracao",        
+    "local",              
+    "email_pessoal",      
 ]
 # ---------------------------------------------
 # 🔎 Helpers de explicabilidade
@@ -105,10 +103,8 @@ def _decode_text(text: str) -> str:
     if not isinstance(text, str):
         return ""
     try:
-        # Tenta decodificar o texto que parece ser "latin-1 que deveria ser utf-8"
         return text.encode('latin-1').decode('utf-8', 'ignore')
     except:
-        # Se falhar, retorna o texto original
         return text
 
 def extract_skills(vaga_text: str, extra_skills: Optional[List[str]] = None) -> List[str]:
@@ -116,17 +112,14 @@ def extract_skills(vaga_text: str, extra_skills: Optional[List[str]] = None) -> 
     base = set(DEFAULT_SKILLS + (extra_skills or []))
     vt = _norm(vaga_text)
     found = [s for s in base if s in vt]
-    # se achar menos de 5, ainda retorna um conjunto mínimo útil (top 10 do default)
     return found[:20] if found else DEFAULT_SKILLS[:10]
 
 def split_sentences(text: str) -> List[str]:
     """Split simples e robusto (sem novas deps) para sentenças do CV."""
     if not isinstance(text, str) or not text.strip():
         return []
-    # quebra por . ! ? e quebras de linha
     parts = re.split(r'(?<=[\.\!\?])\s+|\n+', text.strip())
-    # remove lixo e sentenças muito curtas
-    return [p.strip() for p in parts if len(p.strip()) > 20][:60]  # no máx 60 p/ velocidade
+    return [p.strip() for p in parts if len(p.strip()) > 20][:60]
 
 @st.cache_data(hash_funcs={SentenceTransformer: lambda _: None})
 def top_relevant_sentences(
@@ -137,16 +130,11 @@ def top_relevant_sentences(
     encoder: SentenceTransformer,
     k: int = 3
 ) -> List[str]:
-    """
-    Retorna as k sentenças do CV mais próximas do embedding da vaga (explicabilidade).
-    Cacheia por (candidate_id, vaga_id) p/ desempenho.
-    """
+    """Retorna as k sentenças do CV mais próximas do embedding da vaga (explicabilidade)."""
     sents = split_sentences(cv_text)
     if not sents:
         return []
-    # embed só as sentenças (rápido, limitei a 60 acima)
     sent_emb = encoder.encode(sents, show_progress_bar=False, convert_to_numpy=True, batch_size=32).astype("float32")
-    # normaliza para cosine ~ produto interno
     sent_emb = _l2_normalize(sent_emb)
     vaga_emb = vaga_embedding.astype("float32")
     scores = (sent_emb @ vaga_emb).reshape(-1)
@@ -158,21 +146,14 @@ def top_relevant_sentences(
 def render_badges(items: list) -> str:
     """Renders a list of items as a series of stylized HTML badges."""
     return " ".join([f"<span style='display:inline-block;padding:2px 8px;border-radius:999px;background:#1f6feb20;border:1px solid #1f6feb55;margin:2px 6px 2px 0;font-size:12px'>{html.escape(i)}</span>" for i in items[:12]])
+
 # --- 🎯 INJEÇÃO DE SECRETS DO STREAMLIT CLOUD ---
 if "aws" in st.secrets:
     try:
-        # tenta maiúsculas
-        access_key = st.secrets["aws"].get("AWS_ACCESS_KEY_ID")
-        secret_key = st.secrets["aws"].get("AWS_SECRET_ACCESS_KEY")
-        aws_region = st.secrets["aws"].get("AWS_REGION") or st.secrets["aws"].get("AWS_DEFAULT_REGION")
+        access_key = st.secrets["aws"].get("AWS_ACCESS_KEY_ID") or st.secrets["aws"]["aws_access_key_id"]
+        secret_key = st.secrets["aws"].get("AWS_SECRET_ACCESS_KEY") or st.secrets["aws"]["aws_secret_access_key"]
+        aws_region = st.secrets["aws"].get("AWS_REGION") or st.secrets["aws"].get("AWS_DEFAULT_REGION") or st.secrets["aws"].get("region_name")
 
-        # fallback minúsculas
-        if not access_key:
-            access_key = st.secrets["aws"]["aws_access_key_id"]
-            secret_key = st.secrets["aws"]["aws_secret_access_key"]
-            aws_region = st.secrets["aws"].get("region_name")
-
-        # exporta p/ env
         os.environ["AWS_ACCESS_KEY_ID"] = access_key
         os.environ["AWS_SECRET_ACCESS_KEY"] = secret_key
         os.environ["AWS_DEFAULT_REGION"] = aws_region
@@ -181,25 +162,18 @@ if "aws" in st.secrets:
     except KeyError as e:
         logger.error(f"Erro: Segredo AWS faltando. Chave não encontrada: {e}.")
         st.error("❌ Segredo AWS faltando. Verifique se as chaves (ID, SECRET, REGION) estão no formato [aws] correto.")
-        #st.stop() # Comentado para permitir testes locais sem secrets
 
 # ==============================================================================
 # 3. FUNÇÕES UTILITÁRIAS DE HASH/NORMALIZAÇÃO E CACHE/LOAD
 # ==============================================================================
 
 def _hash_df(df: pd.DataFrame, cols: List[str], sample_rows: int = 0) -> str:
-    """
-    Gera um hash leve e estável baseado no conteúdo das colunas indicadas.
-    Usa amostra (opcional) para performance em bases gigantes.
-    """
+    """Gera um hash leve e estável baseado no conteúdo das colunas indicadas."""
     if not set(cols).issubset(df.columns):
         return f"missing_cols_{hash(tuple(cols))}"
     if sample_rows and len(df) > sample_rows:
         df = df.sample(sample_rows, random_state=42)
-
-    # hash_pandas_object já é estável; soma parcial para obter um valor curto
     s = pd.util.hash_pandas_object(df[cols].astype(str), index=False).values
-    # usa apenas primeiros 2000 itens para performance
     return str(int(s[: min(2000, len(s))].sum())) if len(s) else "empty"
 
 def _l2_normalize(M: np.ndarray) -> np.ndarray:
@@ -210,13 +184,11 @@ def _l2_normalize(M: np.ndarray) -> np.ndarray:
 def get_s3_fs():
     """Retorna o filesystem do S3 com configuração correta."""
     try:
-        # Se as variáveis de ambiente não existirem, s3fs falhará
         if not os.environ.get("AWS_ACCESS_KEY_ID"):
+             # Simula falha se não houver credenciais
              raise RuntimeError("Credenciais AWS não configuradas. Verifique st.secrets.")
 
         fs = s3fs.S3FileSystem(anon=False)
-        # valida acesso ao bucket
-        # fs.ls(S3_BUCKET) # Comentado para evitar erro se a região estiver errada, mas as credenciais OK
         return fs
     except Exception as e:
         raise RuntimeError(f"Erro de conexão com S3: {e}. Verifique as credenciais AWS.")
@@ -247,22 +219,21 @@ def load_encoder(model_name: str = "all-MiniLM-L6-v2") -> SentenceTransformer:
         sbert_s3_path = f"{S3_BUCKET}/{SBERT_MODEL_DIR}"
         test_file_path = f"{sbert_s3_path}/config.json"
 
-        if not fs.exists(test_file_path):
-            logger.warning(f"Modelo SBERT não encontrado em S3 ({sbert_s3_path}). Baixando {model_name}...")
+        if fs.exists(test_file_path):
+            temp_dir = tempfile.mkdtemp()
+            local_model_path = os.path.join(temp_dir, SBERT_MODEL_DIR)
+            fs.get(sbert_s3_path, local_model_path, recursive=True)
+            encoder = SentenceTransformer(local_model_path)
+            _ = encoder.encode(["probe"], convert_to_numpy=True)
+            return encoder
+        else:
+            logger.warning(f"Modelo SBERT não encontrado em S3. Baixando {model_name}...")
             encoder = SentenceTransformer(model_name)
             _ = encoder.encode(["probe"], convert_to_numpy=True)
             return encoder
-
-        temp_dir = tempfile.mkdtemp()
-        local_model_path = os.path.join(temp_dir, SBERT_MODEL_DIR)
-        fs.get(sbert_s3_path, local_model_path, recursive=True)
-
-        encoder = SentenceTransformer(local_model_path)
-        _ = encoder.encode(["probe"], convert_to_numpy=True)
-        return encoder
-
+            
     except Exception as e:
-        logger.error(f"Falha ao carregar SBERT do S3, tentando download local: {e}")
+        logger.error(f"Falha ao carregar SBERT: {e}")
         try:
             encoder = SentenceTransformer(model_name)
             _ = encoder.encode(["probe"], convert_to_numpy=True)
@@ -274,16 +245,12 @@ def load_encoder(model_name: str = "all-MiniLM-L6-v2") -> SentenceTransformer:
         if temp_dir and os.path.exists(temp_dir):
             try:
                 shutil.rmtree(temp_dir)
-                logger.info(f"Diretório temporário limpo: {temp_dir}")
             except Exception as e:
                 logger.error(f"Erro ao limpar diretório temporário: {e}")
 
 @st.cache_data(show_spinner="Carregando dados dos candidatos e vagas do S3...", ttl=900)
 def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFrame, List[str]]:
-    """
-    Carrega os DataFrames de candidatos e vagas do S3.
-    Inclui colunas de metadados dos candidatos e garante a preservação delas.
-    """
+    """Carrega os DataFrames de candidatos e vagas do S3."""
     log_messages: List[str] = []
     cdf = pd.DataFrame()
     vdf = pd.DataFrame()
@@ -292,42 +259,16 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
     try:
         fs = get_s3_fs()
         candidatos_s3_path = f"{S3_BUCKET}/data/{CANDIDATOS_FILE}"
-        log_messages.append(f"📁 Buscando candidatos em: s3://{candidatos_s3_path}")
-
-        if not fs.exists(candidatos_s3_path):
-            raise FileNotFoundError(f"Arquivo de candidatos não encontrado: s3://{candidatos_s3_path}")
-
+        
         with fs.open(candidatos_s3_path, "rb") as f:
-            cdf = pd.read_csv(
-                f,
-                nrows=_max_rows,
-                encoding="latin-1", # Mantido latin-1 pois é a sua configuração
-                engine="python",
-                on_bad_lines="skip",
-            )
+            cdf = pd.read_csv(f, nrows=_max_rows, encoding="latin-1", engine="python", on_bad_lines="skip")
 
-        # AJUSTE: Incluir metadados nas colunas obrigatórias
-        required_candidato_cols = [CANDIDATO_ID_COL, CV_TEXT_COL] + CANDIDATO_METADATA_COLS
-        
-        # 1. Checagem de colunas CRÍTICAS (ID e CV)
         critical_cols = [CANDIDATO_ID_COL, CV_TEXT_COL]
-        missing_critical_cols = [col for col in critical_cols if col not in cdf.columns]
-        if missing_critical_cols:
-            raise KeyError(f"Erro ao carregar candidatos: colunas críticas ausentes: {missing_critical_cols}")
-
-        # 2. Drop NaNs apenas nas colunas críticas e garante tipo str para o texto
         cdf = cdf.dropna(subset=critical_cols)
-        cdf[CV_TEXT_COL] = cdf[CV_TEXT_COL].astype(str)
+        cdf[CV_TEXT_COL] = cdf[CV_TEXT_COL].astype(str).apply(_decode_text)
         
-        # 🟢 CORREÇÃO: Aplicar decodificação para tentar resolver problemas de acentuação
-        cdf[CV_TEXT_COL] = cdf[CV_TEXT_COL].apply(_decode_text)
-
-        # 3. Preservar APENAS as colunas que existem no CSV e que são necessárias (ID, CV, Metadados)
-        cols_to_keep = [col for col in required_candidato_cols if col in cdf.columns]
-        cdf = cdf[cols_to_keep] 
-        
-        # 4. Garante índice posicional contínuo
-        cdf = cdf.reset_index(drop=True) 
+        cols_to_keep = [col for col in ([CANDIDATO_ID_COL, CV_TEXT_COL] + CANDIDATO_METADATA_COLS) if col in cdf.columns]
+        cdf = cdf[cols_to_keep].reset_index(drop=True) 
 
         log_messages.append(f"✅ Candidatos carregados: {len(cdf):,} registros")
 
@@ -339,43 +280,19 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
     try:
         fs = get_s3_fs()
         vagas_s3_path = f"{S3_BUCKET}/data/{VAGAS_FILE}"
-        log_messages.append(f"📁 Buscando vagas em: s3://{vagas_s3_path}")
-
-        if not fs.exists(vagas_s3_path):
-            raise FileNotFoundError(f"Arquivo de vagas não encontrado: s3://{vagas_s3_path}")
 
         with fs.open(vagas_s3_path, "rb") as f:
             vdf = pd.read_csv(f, encoding="latin-1")
 
-        required_vaga_cols = [VAGA_ID_COL, "titulo_vaga"]
-        missing_cols = [col for col in required_vaga_cols if col not in vdf.columns]
-        if missing_cols:
-            raise KeyError(f"Vagas sem colunas: {missing_cols}")
-
-        text_cols_to_combine = [
-            "titulo_vaga",
-            "objetivo_vaga",
-            "nivel_profissional",
-            "principais_atividades",
-            "competencias",
-            "habilidades_comportamentais",
-        ]
+        text_cols_to_combine = ["titulo_vaga", "objetivo_vaga", "nivel_profissional", "principais_atividades", "competencias", "habilidades_comportamentais"]
         existing_text_cols = [col for col in text_cols_to_combine if col in vdf.columns]
         
-        # 🟢 CORREÇÃO: Aplicar decodificação nas colunas de texto da vaga antes de combinar
         for col in existing_text_cols:
             vdf[col] = vdf[col].apply(_decode_text)
 
-        if existing_text_cols:
-            vdf[VAGA_TEXT_COL] = vdf[existing_text_cols].fillna("").astype(str).agg(" ".join, axis=1)
-        else:
-            raise ValueError(f"Nenhuma coluna base encontrada para criar '{VAGA_TEXT_COL}'.")
+        vdf[VAGA_TEXT_COL] = vdf[existing_text_cols].fillna("").astype(str).agg(" ".join, axis=1)
 
         vdf = vdf.dropna(subset=[VAGA_TEXT_COL, VAGA_ID_COL]).reset_index(drop=True)
-        
-        # Garante índice posicional contínuo
-        vdf = vdf.reset_index(drop=True)
-
         log_messages.append(f"✅ Vagas carregadas: {len(vdf):,} registros")
 
     except Exception as e:
@@ -398,15 +315,8 @@ def get_or_create_embeddings(
     encoder: SentenceTransformer,
     _use_cache: bool = True,
 ) -> np.ndarray:
-    """
-    Gerencia cache de embeddings, com:
-    - chave robusta por hash de conteúdo
-    - normalização L2
-    - dtype float32 (metade da RAM)
-    - gravação/ leitura em S3
-    """
+    """Gerencia cache e cria embeddings (SBERT) para DataFrame."""
     if df.empty:
-        # Assumindo dimensão 384 para o all-MiniLM-L6-v2
         return np.zeros((0, 384), dtype="float32")
 
     content_hash = _hash_df(df, [text_col], sample_rows=20000)
@@ -418,36 +328,25 @@ def get_or_create_embeddings(
     fs = get_s3_fs()
     s3_emb_path = f"{S3_BUCKET}/data/embeddings/{filename}"
 
-    # 1) Tentar carregar do S3
     if _use_cache and fs.exists(s3_emb_path):
         with st.spinner(f"☁️ Carregando embeddings do S3: {filename}"):
             with fs.open(s3_emb_path, "rb") as f:
                 embeddings = np.load(f)
-        # Se o shape não bate com o df atual, vamos ignorar o cache e recomputar
         if embeddings.shape[0] == len(df):
             embeddings = _l2_normalize(embeddings.astype("float32"))
             st.session_state[cache_key] = embeddings
             return embeddings
-        else:
-            st.warning(f"Cache de embeddings desatualizado para {filename}: {embeddings.shape[0]} ≠ {len(df)}. Recalculando...")
 
-
-    # 2) Gerar novos embeddings
+    # Gerar novos embeddings (com barra de progresso)
     texts = df[text_col].astype(str).tolist()
     progress_bar = st.progress(0.0)
     status_text = st.empty()
-
     batch_size = 64
     all_embeddings: List[np.ndarray] = []
 
     for i in range(0, len(texts), batch_size):
         batch_texts = texts[i : i + batch_size]
-        batch_embeddings = encoder.encode(
-            batch_texts,
-            show_progress_bar=False,
-            convert_to_numpy=True,
-            batch_size=min(batch_size, 32),
-        ).astype("float32")
+        batch_embeddings = encoder.encode(batch_texts, show_progress_bar=False, convert_to_numpy=True, batch_size=32).astype("float32")
         all_embeddings.append(batch_embeddings)
 
         progress = min((i + batch_size) / len(texts), 1.0)
@@ -458,7 +357,7 @@ def get_or_create_embeddings(
     progress_bar.empty()
     status_text.empty()
 
-    # 3) Salvar no S3
+    # Salvar no S3
     try:
         with st.spinner("💾 Salvando embeddings no S3..."):
             with tempfile.NamedTemporaryFile(delete=False, suffix=".npy") as tmp:
@@ -473,7 +372,7 @@ def get_or_create_embeddings(
     return embeddings
 
 # ==============================================================================
-# 4. FUNÇÕES DE PREDIÇÃO
+# 4. FUNÇÕES DE PREDIÇÃO E RANKING (POTENCIAL)
 # ==============================================================================
 
 def predict_match_and_rank(
@@ -481,66 +380,47 @@ def predict_match_and_rank(
     all_candidate_embeddings: np.ndarray,
     cdf: pd.DataFrame,
     bst: Any, 
-    le: Any = None, 
     top_k: int = 1000,
 ) -> pd.DataFrame:
-    """
-    Calcula matching e ranking de forma otimizada e segura contra desalinhamentos.
-    """
-    # Checagens básicas
+    """Calcula matching e ranking de candidatos por probabilidade (Potencial)."""
     if cdf.empty or all_candidate_embeddings.size == 0:
         return pd.DataFrame()
 
-    # Garante que não vamos indexar além do limite
     n_cand = min(len(cdf), all_candidate_embeddings.shape[0])
-    if n_cand == 0:
-        return pd.DataFrame()
-
     cand_emb = all_candidate_embeddings[:n_cand]
     cdf_safe = cdf.iloc[:n_cand].reset_index(drop=True)
 
-    # similaridade por produto interno (assumindo normalização L2 prévia)
+    # 1. Filtrar Top K por Similaridade (Primeira Peneira Rápida)
     sims = cand_emb @ vaga_embedding.astype("float32")
     k = min(top_k, n_cand)
     top_idx = np.argpartition(sims, -k)[-k:]
     top_idx = top_idx[np.argsort(-sims[top_idx])]
 
-    # 2. Construção da Matriz de Predição (X_predict)
+    # 2. Construção da Matriz de Predição
     X_left = all_candidate_embeddings[top_idx]
-    # Cria a matriz de embeddings da vaga replicada
     X_right = np.broadcast_to(vaga_embedding, X_left.shape) 
     
-    # Concatenação Simples (768 features)
+    # Matriz para XGBoost (768 + 768 = 1536 features)
     X_predict_768 = np.hstack([X_left, X_right]).astype(np.float32, copy=False)
-
-    # CORREÇÃO CRÍTICA: Duplicar as features para 1536 (768 + 768)
     X_predict = np.hstack([X_predict_768, X_predict_768]).astype(np.float32, copy=False)
     
-    # 3. Predição compatível com Booster OU sklearn
-    predictions: np.ndarray
+    # 3. Predição
     try:
         if isinstance(bst, xgb.Booster):
             dtest = xgb.DMatrix(X_predict)
             predictions = bst.predict(dtest)
-
-        else: # sklearn.XGBClassifier ou similar
+        else:
             if hasattr(bst, "predict_proba"):
                 proba = bst.predict_proba(X_predict)
-                if proba.ndim == 2 and proba.shape[1] > 1:
-                    predictions = proba[:, 1]
-                else:
-                    predictions = proba.ravel()
+                predictions = proba[:, 1] if proba.ndim == 2 and proba.shape[1] > 1 else proba.ravel()
             else:
-                pred = bst.predict(X_predict)
-                predictions = pred.astype(np.float32, copy=False) if isinstance(pred, np.ndarray) else np.array(pred, dtype=np.float32)
+                predictions = bst.predict(X_predict).astype(np.float32, copy=False)
 
     except Exception as e:
-        # Se algo der errado, deixe traço claro na interface
         st.error(f"Erro ao gerar predições com o modelo XGBoost: {e}")
         return pd.DataFrame()
 
-    # 4. Formatação e Ranking
-    # ✅ CORREÇÃO GARANTIDA: O cdf agora tem índice alinhado ao top_idx
+    # 4. Formatação e Ranking (Potencial = Probabilidade de Match)
     results_df = cdf_safe.iloc[top_idx].copy()
     results_df["probabilidade_match"] = predictions.astype(np.float32, copy=False)
     results_df = results_df.sort_values("probabilidade_match", ascending=False).reset_index(drop=True)
@@ -549,7 +429,7 @@ def predict_match_and_rank(
     return results_df
 
 # ==============================================================================
-# 5. NOVAS FUNÇÕES DE PERSISTÊNCIA E INSERÇÃO DE DADOS
+# 5. FUNÇÕES DE PERSISTÊNCIA E INSERÇÃO DE DADOS
 # ==============================================================================
 
 def save_dataframe_to_s3(df: pd.DataFrame, filename: str, s3_dir: str = S3_DATA_PATH) -> bool:
@@ -559,7 +439,6 @@ def save_dataframe_to_s3(df: pd.DataFrame, filename: str, s3_dir: str = S3_DATA_
         s3_path = f"{s3_dir.rstrip('/')}/{filename}"
 
         csv_buffer = io.StringIO()
-        # Usamos encoding 'latin-1' de forma consistente com o load_data
         df.to_csv(csv_buffer, index=False, encoding='latin-1')
         
         with fs.open(s3_path, 'w', encoding='latin-1') as f:
@@ -581,25 +460,18 @@ def add_new_data_point(
 ) -> pd.DataFrame:
     """Adiciona um novo ponto de dado (candidato ou vaga) ao DataFrame existente."""
     
-    # Gera um ID único e baseado no tempo
     new_id = f"{id_prefix}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
-    
-    # Cria uma nova linha como Series
     new_row_series = pd.Series(new_data)
     new_row_series[id_col] = new_id
     
-    # Cria um DF temporário para garantir que todas as colunas sejam mantidas (incluindo as NaNs)
     df_temp = pd.DataFrame(columns=df.columns)
-    # Reindexa a nova linha para ter a ordem e o conjunto de colunas corretos do DF original
     df_temp.loc[0] = new_row_series.reindex(df.columns)
     
-    # Aplica a limpeza de texto (importante para o embedding)
     df_temp[text_col] = df_temp[text_col].apply(_decode_text)
 
-    # Concatena a nova linha
     updated_df = pd.concat([df, df_temp], ignore_index=True)
     
-    # Invalida o cache de dados e embeddings para forçar o Streamlit a recarregar
+    # Invalida o cache para forçar a recarga e recomputação dos embeddings
     st.cache_data.clear() 
     st.session_state.clear()
     
@@ -610,11 +482,9 @@ def add_new_data_point(
 # ==============================================================================
 
 def format_currency(value: Any) -> str:
-    """Formata valor para o padrão monetário brasileiro, tratando NaNs/tipos."""
+    """Formata valor para o padrão monetário brasileiro."""
     try:
-        # Tenta converter para float. Se for None, NaN ou string vazia, usa 0.0
         val = float(value) if pd.notna(value) else 0.0
-        # Formato brasileiro R$ X.XXX,XX
         return f"R$ {val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     except Exception:
         return "R$ 0,00"
@@ -623,22 +493,18 @@ def safe_display(value, default_str="N/A"):
     """Retorna o valor ou o default se for nulo/vazio."""
     if pd.isna(value) or value is None or str(value).lower() in ('nan', 'n/a', ''):
         return default_str
-    # Garante que o número não seja exibido com 20 casas decimais (caso da remuneração)
-    if isinstance(value, (int, float)):
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
         return str(int(value)) if int(value) == value else f"{value:.2f}"
-    return value
+    return str(value)
 
 def display_candidate_card(candidate_data: pd.Series, rank: int, vaga_row: pd.Series, vaga_embedding: np.ndarray, encoder: SentenceTransformer):
     with st.container(border=True):
         col1, col2, col3 = st.columns([3, 2, 1])
 
-        # === Coluna 1 (Nome e Metadados) ===
         with col1:
-            # 🟢 NOVO NOME PRINCIPAL
             nome_display = safe_display(candidate_data.get("nome", candidate_data.get(CANDIDATO_ID_COL, 'Candidato N/A')))
             st.subheader(f"#{rank} - {nome_display}")
             
-            # 🟢 NOVO ENDEREÇO
             endereco_display = safe_display(candidate_data.get("endereco", "Localidade N/A"))
             st.write(f"**Endereço:** {endereco_display}")
 
@@ -649,37 +515,31 @@ def display_candidate_card(candidate_data: pd.Series, rank: int, vaga_row: pd.Se
                 linha1.append(str(candidate_data.get("cidade")))
             st.caption(" | ".join(linha1) if linha1 else "Local/Cidade: N/A")
 
-            # 🟢 NOVO NÍVEL ACADÊMICO
             st.write(f"**Escolaridade:** {safe_display(candidate_data.get('nivel_academico', 'Nível Acadêmico N/A'))}")
             if pd.notna(candidate_data.get("tempo_experiencia", None)):
                  st.write(f"**Experiência:** {candidate_data.get('tempo_experiencia')}")
 
-        # === Coluna 2 (Remuneração e Contatos) ===
         with col2:
             st.write(f"**Gênero:** {safe_display(candidate_data.get('genero', 'N/A'))}")
             st.write(f"**Área:** {safe_display(candidate_data.get('area_atuacao', 'N/A'))}")
             st.write(f"**Última experiência:** {safe_display(candidate_data.get('ultima_experiencia', 'N/A'))}")
             
-            # 🟢 NOVA REMUNERAÇÃO (Salário) - Usando a sua função format_currency
             salary = candidate_data.get("remuneracao", 0) 
             st.write(f"**Salário/Remuneração:** {format_currency(salary)}")
 
-            # contatos
             links = []
             if pd.notna(candidate_data.get("email", None)):
                 links.append(f"📧 [Email Profissional]({'mailto:' + str(candidate_data.get('email'))})")
-            if pd.notna(candidate_data.get("email_pessoal", None)): # Coluna adicional
-                links.append(f"📧 [Email Pessoal]({'mailto:' + str(candidate_data.get('email_pessoal'))})")
             if pd.notna(candidate_data.get("linkedin", None)):
                  links.append(f"🔗 [LinkedIn]({candidate_data.get('linkedin')})")
             if links:
-                 st.markdown(" | ".join(links), unsafe_allow_html=True) # Usamos markdown para links
+                 st.markdown(" | ".join(links), unsafe_allow_html=True)
 
         with col3:
             prob = float(candidate_data.get("probabilidade_match", 0.0))
             st.metric(label="Match", value=f"{prob:.1%}", delta=f"Rank #{rank}" if rank <= 3 else None)
 
-        # Skills: extrai da vaga e destaca as que aparecem no CV
+        # Skills
         vaga_text = str(vaga_row.get(VAGA_TEXT_COL, vaga_row.get("titulo_vaga", "")))
         target_skills = extract_skills(vaga_text)
         cv_text_norm = _norm(str(candidate_data.get(CV_TEXT_COL, "")))
@@ -688,9 +548,8 @@ def display_candidate_card(candidate_data: pd.Series, rank: int, vaga_row: pd.Se
         st.markdown("**Skills que batem com a vaga:**", help="Detectadas no texto da vaga e encontradas no CV")
         st.markdown(render_badges(skills_hit), unsafe_allow_html=True)
 
-        # Explicabilidade: frases mais relevantes do CV para a vaga
+        # Explicabilidade
         with st.expander("🔎 Por que este candidato apareceu aqui? (trechos mais relevantes do CV)"):
-            # A chave de cache deve incluir o ID da vaga e do candidato, mas o top_relevant_sentences já faz isso!
             highlights = top_relevant_sentences(
                 candidate_data.get(CANDIDATO_ID_COL, f"cand_{rank}"),
                 vaga_row.get(VAGA_ID_COL, "vaga"),
@@ -733,52 +592,49 @@ def display_load_logs(log_messages: List[str]) -> bool:
 def page_admin(cdf: pd.DataFrame, vdf: pd.DataFrame):
     """Página para importação e adição manual de candidatos/vagas."""
     st.header("🛠️ Administração de Dados")
-    st.markdown("Use esta seção para importar novos arquivos ou adicionar registros manualmente.")
+    st.markdown("Use esta seção para **importar novos arquivos CSV** ou **adicionar registros manualmente** e garantir a consistência da base de dados no S3.")
 
-    tab_upload, tab_manual = st.tabs(["📁 Importar Arquivo CSV", "✏️ Adicionar Manualmente"])
+    tab_upload, tab_manual = st.tabs(["📁 Importar Arquivo CSV (Substituir)", "✏️ Adicionar Manualmente"])
 
     # -----------------------------------------------------
     # TAB 1: UPLOAD DE ARQUIVO
     # -----------------------------------------------------
     with tab_upload:
         st.subheader("Substituir Bases de Dados no S3")
-        st.warning("⚠️ **ATENÇÃO:** O upload substituirá os arquivos no S3 e forçará o recálculo dos embeddings.")
+        st.warning("⚠️ **ATENÇÃO:** O upload **substituirá** a base inteira no S3 e forçará o recálculo dos embeddings. Mantenha as colunas originais!")
 
         data_type = st.radio("Tipo de Dados para Upload:", ["Candidatos", "Vagas"])
 
         uploaded_file = st.file_uploader(f"Selecione o arquivo CSV de {data_type.lower()}", type=["csv"])
 
-        if uploaded_file and st.button(f"📥 Substituir {data_type} no S3", key="upload_s3"):
+        if uploaded_file and st.button(f"📥 Substituir {data_type} no S3 e Recarregar", key="upload_s3"):
             try:
-                # Carrega o novo DF com o encoding correto (latin-1)
                 new_df = pd.read_csv(uploaded_file, encoding='latin-1', engine="python", on_bad_lines="skip")
-                
                 filename = CANDIDATOS_FILE if data_type == "Candidatos" else VAGAS_FILE
 
                 if save_dataframe_to_s3(new_df, filename):
-                    st.success(f"✅ Arquivo de {data_type} substituído no S3 com sucesso!")
-                    st.info("🔄 Recarregando a aplicação para carregar a nova base de dados...")
+                    st.success(f"✅ Arquivo de {data_type} substituído no S3 com sucesso! Recarregando...")
                     time.sleep(1)
                     st.rerun()
                 
             except Exception as e:
                 st.error(f"❌ Erro ao processar o arquivo: {e}")
-                st.info("Certifique-se de que o CSV possui as colunas essenciais e a codificação está correta (latin-1).")
+                st.info("Verifique a codificação (latin-1) e as colunas.")
 
     # -----------------------------------------------------
     # TAB 2: ADIÇÃO MANUAL
     # -----------------------------------------------------
     with tab_manual:
-        st.subheader("Adicionar um único registro")
+        st.subheader("Adicionar um único registro e Atualizar o S3")
         add_type = st.radio("Tipo de Registro para Adicionar:", ["Candidato", "Vaga"])
         
         if add_type == "Candidato":
-            st.markdown("Preencha os dados do novo candidato:")
+            st.markdown("Preencha os dados do novo **Candidato**:")
             with st.form("new_candidate_form"):
                 col_name, col_email = st.columns(2)
                 nome = col_name.text_input("Nome Completo", key="new_cand_nome")
                 email = col_email.text_input("Email Principal", key="new_cand_email")
-                cv_text = st.text_area("Texto Completo do Currículo (CRÍTICO para o Match!)", height=250, key="new_cand_cv")
+                cv_text = st.text_area("**Texto Completo do Currículo (CRÍTICO para o Match!)**", height=250, key="new_cand_cv")
                 
                 col_meta1, col_meta2, col_meta3 = st.columns(3)
                 remuneracao = col_meta1.number_input("Remuneração Almejada (R$)", min_value=0.0, step=100.0, key="new_cand_rem")
@@ -788,35 +644,27 @@ def page_admin(cdf: pd.DataFrame, vdf: pd.DataFrame):
                 submitted = st.form_submit_button("➕ Adicionar Novo Candidato e Recarregar")
 
                 if submitted:
-                    if len(cv_text) < 50:
-                        st.error("O texto do currículo deve ter no mínimo 50 caracteres.")
-                    elif not nome or not cv_text:
-                         st.error("Nome e Texto do Currículo são obrigatórios.")
+                    if len(cv_text) < 50 or not nome:
+                        st.error("Nome e o Texto do Currículo (mín. 50 caracteres) são obrigatórios.")
                     else:
                         new_cand_data = {
-                            "nome": nome,
-                            "email": email,
-                            CV_TEXT_COL: cv_text, # Coluna CV_TEXT_COL é crítica
-                            "remuneracao": remuneracao,
-                            "escolaridade": escolaridade,
-                            "area_atuacao": area_atuacao,
-                            CANDIDATO_ID_COL: "TEMP_ID",
+                            "nome": nome, "email": email, CV_TEXT_COL: cv_text, 
+                            "remuneracao": remuneracao, "escolaridade": escolaridade, 
+                            "area_atuacao": area_atuacao, CANDIDATO_ID_COL: "TEMP_ID",
                         }
-                        
                         updated_cdf = add_new_data_point(cdf, new_cand_data, CANDIDATO_ID_COL, CV_TEXT_COL, id_prefix="cand")
                         
                         if save_dataframe_to_s3(updated_cdf, CANDIDATOS_FILE):
-                            st.success(f"✅ Candidato **{nome}** adicionado e base atualizada no S3!")
-                            st.info("🔄 Recarregando a aplicação para gerar os novos embeddings...")
+                            st.success(f"✅ Candidato **{nome}** adicionado e base atualizada no S3! Recarregando...")
                             time.sleep(1)
                             st.rerun()
         
         elif add_type == "Vaga":
-            st.markdown("Preencha os dados da nova vaga:")
+            st.markdown("Preencha os dados da nova **Vaga**:")
             with st.form("new_vaga_form"):
                 titulo = st.text_input("Título da Vaga", key="new_vaga_titulo")
                 objetivo = st.text_area("Objetivo / Descrição Curta", key="new_vaga_objetivo")
-                atividades = st.text_area("Principais Atividades e Requisitos (CRÍTICO para o Match!)", height=250, key="new_vaga_atividades")
+                atividades = st.text_area("**Principais Atividades e Requisitos (CRÍTICO para o Match!)**", height=250, key="new_vaga_atividades")
                 
                 col_vaga1, col_vaga2 = st.columns(2)
                 nivel = col_vaga1.text_input("Nível Profissional (Ex: Senior)", key="new_vaga_nivel")
@@ -829,22 +677,16 @@ def page_admin(cdf: pd.DataFrame, vdf: pd.DataFrame):
                         st.error("Título e o campo 'Principais Atividades' (mín. 50 caracteres) são obrigatórios.")
                     else:
                         new_vaga_data = {
-                            "titulo_vaga": titulo,
-                            "objetivo_vaga": objetivo,
-                            "principais_atividades": atividades,
-                            "nivel_profissional": nivel,
-                            "competencias": competencias,
-                            VAGA_ID_COL: "TEMP_ID",
+                            "titulo_vaga": titulo, "objetivo_vaga": objetivo, "principais_atividades": atividades,
+                            "nivel_profissional": nivel, "competencias": competencias, VAGA_ID_COL: "TEMP_ID",
                         }
                         
                         updated_vdf = add_new_data_point(vdf, new_vaga_data, VAGA_ID_COL, VAGA_TEXT_COL, id_prefix="vaga")
                         
                         if save_dataframe_to_s3(updated_vdf, VAGAS_FILE):
-                            st.success(f"✅ Vaga **{titulo}** adicionada e base atualizada no S3!")
-                            st.info("🔄 Recarregando a aplicação para gerar os novos embeddings...")
+                            st.success(f"✅ Vaga **{titulo}** adicionada e base atualizada no S3! Recarregando...")
                             time.sleep(1)
                             st.rerun()
-
 
 # --- PÁGINA DE PAINEL ---
 def page_dashboard(cdf: pd.DataFrame, vdf: pd.DataFrame):
@@ -853,11 +695,8 @@ def page_dashboard(cdf: pd.DataFrame, vdf: pd.DataFrame):
     
     col_c, col_v = st.columns(2)
 
-    # CARD 1: Candidatos
     with col_c:
         st.metric("Total de Candidatos", f"{len(cdf):,}")
-        
-        # Distribuição de Escolaridade
         st.markdown("##### Top 7 Escolaridades")
         if not cdf.empty and "escolaridade" in cdf.columns:
             esc_counts = cdf["escolaridade"].value_counts().nlargest(7)
@@ -867,11 +706,8 @@ def page_dashboard(cdf: pd.DataFrame, vdf: pd.DataFrame):
         else:
             st.caption("Dados de escolaridade indisponíveis.")
 
-    # CARD 2: Vagas
     with col_v:
         st.metric("Total de Vagas", f"{len(vdf):,}")
-
-        # Top 5 Áreas de Atuação (Vagas)
         st.markdown("##### Top 5 Títulos de Vaga")
         if not vdf.empty and "titulo_vaga" in vdf.columns:
             title_counts = vdf["titulo_vaga"].value_counts().nlargest(5)
@@ -883,88 +719,83 @@ def page_dashboard(cdf: pd.DataFrame, vdf: pd.DataFrame):
              
     st.markdown("---")
     
-    # Distribuição Geográfica
     st.subheader("Distribuição Geográfica de Candidatos (Top 10 Estados)")
     if "estado" in cdf.columns and "pais" in cdf.columns:
-        br_cands = cdf[cdf["pais"].str.lower() == "brasil"]
+        br_cands = cdf[cdf["pais"].astype(str).str.lower() == "brasil"]
         if not br_cands.empty:
             state_counts = br_cands["estado"].value_counts().nlargest(10).reset_index()
             state_counts.columns = ["Estado", "Candidatos"]
             st.dataframe(state_counts, use_container_width=True)
-            
         else:
              st.caption("Dados geográficos insuficientes ou não-Brasil.")
 
-
-# --- PÁGINA DE MATCHING (LÓGICA PRINCIPAL) ---
-def page_matching(cdf, vdf, encoder, bst):
-    """Lógica principal do Matching de Talentos (Seu código original)."""
+# --- PÁGINA DE MATCHING DE VAGAS CRÍTICAS (NOVO) ---
+def page_critical_match(cdf, vdf, encoder, bst):
+    """Filtra vagas críticas e busca o top candidato (foco em potencial)."""
     
-    # --- Sidebar: Configurações Iniciais ---
+    st.title("🥇 Match de Vagas Críticas (Potencial de Aderência)")
+    st.markdown("Selecione uma vaga para ver os candidatos com maior potencial de aderência.")
+
+    # --- Sidebar: Configurações de Match ---
     with st.sidebar:
-        st.header("⚙️ Configurações do Match")
+        st.header("⚙️ Configurações de Match")
         
-        # Controles de performance (repassados do main() original, mas agora aqui)
-        max_candidates = st.slider("Nº Máximo de Candidatos a Carregar", 100, 100000, 5000, 100)
+        # O slider de max_candidates controla o load_data e o embedding
+        max_candidates = st.slider("Nº Máximo de Candidatos p/ Analisar (AFETA MEMÓRIA!)", 100, 45000, 42000, 1000)
         top_k_for_xgboost = st.slider("Top K Candidatos para Predição XGBoost", 100, 5000, 1000, 100)
         use_cache = st.checkbox("Usar Cache de Embeddings", value=True)
         top_n = st.slider("Resultados por página", 5, 50, 15)
         
+        st.markdown("---")
+        
+        # Filtro de Vagas Críticas
+        st.subheader("Filtro de Vagas Críticas")
+        vaga_ids = vdf[VAGA_ID_COL].unique()
         vaga_options = vdf.set_index(VAGA_ID_COL)["titulo_vaga"].to_dict()
-        selected_vaga_id = st.selectbox(
-            "Selecione a Vaga:",
-            options=list(vaga_options.keys()),
-            format_func=lambda x: f"{x} - {vaga_options[x]}",
-        )
+        
+        # Novo: Filtro para Vagas Críticas (exemplo simples)
+        area_options = sorted(vdf['titulo_vaga'].apply(lambda x: x.split('-')[0].strip() if '-' in x else x).unique())
+        selected_area = st.selectbox("Filtrar por Área/Título (Crítico)", area_options)
+        
+        # Filtra as vagas baseado na seleção
+        filtered_vagas = vdf[vdf['titulo_vaga'].str.contains(selected_area, case=False, na=False)]
+        
+        if filtered_vagas.empty:
+             st.warning("Nenhuma vaga crítica encontrada para este filtro.")
+             selected_vaga_id = None
+        else:
+            filtered_options = filtered_vagas.set_index(VAGA_ID_COL)["titulo_vaga"].to_dict()
+            selected_vaga_id = st.selectbox(
+                "Vagas Críticas Filtradas:",
+                options=list(filtered_options.keys()),
+                format_func=lambda x: f"{x} - {filtered_options[x]}",
+            )
         
         st.markdown("---")
-        st.info(
-            f"""
-        **Estatísticas de Carga:**
-        - 📊 {len(cdf):,} candidatos carregados
-        - 💼 {len(vdf):,} vagas disponíveis
-        - 🎯 exibindo {top_n} por página
-        """
-        )
+        st.info(f"**Estatísticas de Carga:**\n- 📊 **{len(cdf):,}** candidatos carregados\n- 💼 **{len(vdf):,}** vagas disponíveis")
 
     # --- Carregar/Gerar Embeddings ---
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.subheader("Embeddings de Candidatos")
-        candidate_embeddings = get_or_create_embeddings(cdf, CV_TEXT_COL, EMBEDDINGS_FILE, encoder, use_cache)
-        
-        content_hash_c = _hash_df(cdf, [CV_TEXT_COL], sample_rows=20000)
-        cache_key_c = f"emb_{EMBEDDINGS_FILE}_{content_hash_c}"
-        if use_cache and cache_key_c in st.session_state:
-             st.success(f"✅ Embeddings Candidatos: {candidate_embeddings.shape} (Cache)")
-        else:
-             st.warning(f"🔄 Embeddings Candidatos gerados: {candidate_embeddings.shape} (Novo cálculo)")
-
-    with col2:
-        st.subheader("Embeddings de Vagas")
-        vaga_embeddings = get_or_create_embeddings(vdf, VAGA_TEXT_COL, VAGAS_EMBEDDINGS_FILE, encoder, use_cache)
-        
-        content_hash_v = _hash_df(vdf, [VAGA_TEXT_COL], sample_rows=20000)
-        cache_key_v = f"emb_{VAGAS_EMBEDDINGS_FILE}_{content_hash_v}"
-        if use_cache and cache_key_v in st.session_state:
-             st.success(f"✅ Embeddings Vagas: {vaga_embeddings.shape} (Cache)")
-        else:
-             st.warning(f"🔄 Embeddings Vagas gerados: {vaga_embeddings.shape} (Novo cálculo)")
-
-    st.markdown("---")
-
-    # --- Processar Matching ---
     if selected_vaga_id:
+        
+        st.subheader("Status de Processamento")
+        col1, col2 = st.columns(2)
+        with col1:
+            candidate_embeddings = get_or_create_embeddings(cdf, CV_TEXT_COL, EMBEDDINGS_FILE, encoder, use_cache)
+            st.success(f"✅ Embeddings Candidatos: {candidate_embeddings.shape}")
+        with col2:
+            vaga_embeddings = get_or_create_embeddings(vdf, VAGA_TEXT_COL, VAGAS_EMBEDDINGS_FILE, encoder, use_cache)
+            st.success(f"✅ Embeddings Vagas: {vaga_embeddings.shape}")
+            
         vaga_row = vdf[vdf[VAGA_ID_COL] == selected_vaga_id].iloc[0]
         vaga_index = vdf[vdf[VAGA_ID_COL] == selected_vaga_id].index[0]
         vaga_embedding = vaga_embeddings[vaga_index]
 
-        st.subheader(f"💼 Vaga Selecionada: {vaga_row['titulo_vaga']}")
-        st.caption(vaga_row[VAGA_TEXT_COL][:200] + "...")
+        st.markdown("---")
+        st.subheader(f"💼 Vaga em Foco: {vaga_row['titulo_vaga']}")
+        st.caption(vaga_row[VAGA_TEXT_COL][:300] + "...")
 
         # ⏳ Cálculo e Ranking
-        with st.spinner(f"Calculando Match (Top {top_k_for_xgboost} candidatos)..."):
+        with st.spinner(f"Calculando Potencial de Aderência (Top {top_k_for_xgboost} candidatos)..."):
             results_df = predict_match_and_rank(
                 vaga_embedding, 
                 candidate_embeddings, 
@@ -977,13 +808,13 @@ def page_matching(cdf, vdf, encoder, bst):
             st.error("❌ Não foi possível gerar o ranking de candidatos.")
             return
 
-        st.success(f"✅ Match calculado para {len(results_df)} candidatos.")
+        st.success(f"✅ Ranking de Potencial calculado para {len(results_df)} candidatos.")
 
         # --- Paginação e Exibição ---
         total_results = len(results_df)
         total_pages = int(np.ceil(total_results / top_n))
         
-        st.markdown(f"**Top {total_results} Resultados**")
+        st.markdown(f"**Top {total_results} Candidatos por Potencial de Aderência**")
         
         if total_pages > 1:
             page_cols = st.columns([1, 4, 1])
@@ -1016,25 +847,13 @@ def page_matching(cdf, vdf, encoder, bst):
 def main():
     st.title("🎯 RECRUT.AI - Sistema de Match de Talentos")
     
-    # Carregar dados e modelos (globalmente)
+    # 1. Carregar dados (sem limite, para pegar todos os 42.000)
     try:
-        # Load inicial com um limite para manter a velocidade no início
-        cdf, vdf, log_messages = load_data(_max_rows=5000) 
+        # Removido o limite inicial de _max_rows=5000 para carregar a base completa (42.000)
+        # Atenção: Isso exige mais memória! Se Streamlit Cloud travar, use _max_rows=None
+        cdf, vdf, log_messages = load_data(_max_rows=None) 
         
-        # Exibe logs de carregamento na sidebar
-        with st.sidebar:
-            st.header("🔐 Configurações e Status")
-            st.info(f"**Bucket:** {S3_BUCKET}")
-            st.info(f"**Região:** {os.environ.get('AWS_DEFAULT_REGION', 'N/A')}")
-            data_ok = display_load_logs(log_messages)
-
-        if not data_ok or cdf.empty or vdf.empty:
-            st.error("🚨 Crítico: Falha no carregamento dos dados iniciais. Verifique os logs acima.")
-            # Permite que o usuário acesse a página de Admin para upload, mas sem os dados
-            # Apenas um DF vazio para não travar a função page_admin
-            page_admin(pd.DataFrame(columns=[CANDIDATO_ID_COL, CV_TEXT_COL, "nome", "escolaridade"]), pd.DataFrame(columns=[VAGA_ID_COL, "titulo_vaga", VAGA_TEXT_COL]))
-            return
-
+        # 2. Carregar Modelos
         with st.spinner("🚀 Inicializando modelos de IA..."):
             bst = load_models()
             encoder = load_encoder()
@@ -1042,26 +861,37 @@ def main():
 
     except Exception as e:
         st.error(f"❌ Erro Crítico: Falha na inicialização da aplicação: {e}")
-        return
+        # Se falhar, tenta carregar DFs vazios para permitir o acesso ao Admin
+        cdf = pd.DataFrame(columns=[CANDIDATO_ID_COL, CV_TEXT_COL, "nome", "escolaridade"])
+        vdf = pd.DataFrame(columns=[VAGA_ID_COL, "titulo_vaga", VAGA_TEXT_COL])
+        bst = None
+        encoder = None
+        # Exibe logs
+        with st.sidebar:
+            st.header("Status")
+            display_load_logs(log_messages)
 
-
-    # --- Estrutura de Navegação (Tabs) ---
-    tab_match, tab_dashboard, tab_admin = st.tabs(
+    # 3. Estrutura de Navegação (Tabs)
+    tab_critical, tab_dashboard, tab_admin = st.tabs(
         [
-            "🔎 Match de Talentos", 
+            "🥇 Vagas Críticas (Potencial)", 
             "📊 Painel de Estatísticas", 
             "🛠️ Administração de Dados"
         ]
     )
 
-    with tab_match:
-        page_matching(cdf, vdf, encoder, bst)
+    if bst and encoder and not cdf.empty and not vdf.empty:
+        with tab_critical:
+            page_critical_match(cdf, vdf, encoder, bst)
 
-    with tab_dashboard:
-        page_dashboard(cdf, vdf)
+        with tab_dashboard:
+            page_dashboard(cdf, vdf)
+    else:
+        st.warning("Aguardando carregamento de dados e modelos. Verifique o Status na barra lateral e o log no terminal.")
 
+
+    # A página Admin deve estar sempre acessível
     with tab_admin:
-        # Passamos os DFs carregados para que o Admin possa fazer o append
         page_admin(cdf, vdf)
 
 

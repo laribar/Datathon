@@ -527,7 +527,7 @@ def main():
         cdf, vdf = load_data(max_candidates)
         
         # Seleção de vaga
-        vaga_options = vdf.set_index('id_vaga')['titulo_vaga'].to_dict()
+        vaga_options = vdf.set_index(VAGA_ID_COL)['titulo_vaga'].to_dict()
         selected_vaga_id = st.selectbox(
             "Selecione a Vaga:",
             options=list(vaga_options.keys()),

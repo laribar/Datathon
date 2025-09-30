@@ -66,10 +66,7 @@ VAGA_TEXT_COL = "vaga_text"
 
 # NOVO: Colunas de metadados dos candidatos para exibição na UI
 CANDIDATO_METADATA_COLS = [
-    "status",
-    "nivel_hierarquico",
-    "genero",
-    "salario_atual",
+    # ... colunas que já estavam ...
     "cidade",
     "estado",
     "pais",
@@ -80,6 +77,13 @@ CANDIDATO_METADATA_COLS = [
     "ultima_experiencia",
     "email",
     "linkedin",
+    "nome",               # Novo
+    "endereco",           # Novo
+    "nivel_academico",    # Novo
+    "remuneracao",        # Novo
+    "local",              # Novo (para endereço)
+    "email_pessoal",      # Novo (para contatos)
+    # ...
 ]
 # ---------------------------------------------
 # 🔎 Helpers de explicabilidade
@@ -547,37 +551,63 @@ def format_currency(value: Any) -> str:
         return f"R$ {val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     except Exception:
         return "R$ 0,00"
+    
+def safe_display(value, default_str="N/A"):
+    """Retorna o valor ou o default se for nulo/vazio."""
+    if pd.isna(value) or value is None or str(value).lower() in ('nan', 'n/a', ''):
+        return default_str
+    return value
 
 def display_candidate_card(candidate_data: pd.Series, rank: int, vaga_row: pd.Series, vaga_embedding: np.ndarray, encoder: SentenceTransformer):
     with st.container(border=True):
-        # Cabeçalho
         col1, col2, col3 = st.columns([3, 2, 1])
 
+        # === NOVO: Coluna 1 (Nome e Metadados) ===
         with col1:
-            st.subheader(f"#{rank} - {candidate_data.get(CANDIDATO_ID_COL, 'N/A')}")
-            # blocos de metadados úteis
+            # 🟢 NOVO NOME PRINCIPAL
+            nome_display = safe_display(candidate_data.get("nome", candidate_data.get(CANDIDATO_ID_COL, 'Candidato N/A')))
+            st.subheader(f"#{rank} - {nome_display}")
+            
+            # 🟢 NOVO ENDEREÇO
+            endereco_display = safe_display(candidate_data.get("endereco", "Localidade N/A"))
+            st.write(f"**Endereço:** {endereco_display}")
+
+            # Mantendo as informações úteis que já existiam (cidade/estado/país)
             linha1 = []
-            if pd.notna(candidate_data.get("cidade", None)):
+            # Usando 'local' do seu novo CSV, se existir, senão usa os antigos
+            if pd.notna(candidate_data.get("local", None)):
+                 linha1.append(str(candidate_data.get("local")))
+            elif pd.notna(candidate_data.get("cidade", None)):
                 linha1.append(str(candidate_data.get("cidade")))
-            if pd.notna(candidate_data.get("estado", None)):
-                linha1.append(str(candidate_data.get("estado")))
-            if pd.notna(candidate_data.get("pais", None)):
-                linha1.append(str(candidate_data.get("pais")))
-            st.write(" | ".join(linha1) if linha1 else "Localidade: N/A")
+            # Apenas para garantir que algo apareça, se 'local' não for ideal
+            st.caption(" | ".join(linha1) if linha1 else "Local/Cidade: N/A")
 
-            st.write(f"**Status:** {candidate_data.get('status', 'N/A')}")
-            st.write(f"**Nível:** {candidate_data.get('nivel_hierarquico', 'N/A')}")
-            if pd.notna(candidate_data.get("escolaridade", None)):
-                st.write(f"**Escolaridade:** {candidate_data.get('escolaridade')}")
+            # 🟢 NOVO NÍVEL ACADÊMICO
+            st.write(f"**Escolaridade:** {safe_display(candidate_data.get('nivel_academico', 'Nível Acadêmico N/A'))}")
+            # Mantendo informações existentes que ainda são úteis
             if pd.notna(candidate_data.get("tempo_experiencia", None)):
-                st.write(f"**Experiência:** {candidate_data.get('tempo_experiencia')}")
+                 st.write(f"**Experiência:** {candidate_data.get('tempo_experiencia')}")
 
+        # === NOVO: Coluna 2 (Remuneração e Contatos) ===
         with col2:
-            st.write(f"**Gênero:** {candidate_data.get('genero', 'N/A')}")
-            st.write(f"**Área:** {candidate_data.get('area_atuacao', 'N/A')}")
-            st.write(f"**Última experiência:** {candidate_data.get('ultima_experiencia', 'N/A')}")
-            salary = candidate_data.get("salario_atual", 0)
-            st.write(f"**Salário atual:** {format_currency(salary)}")
+            st.write(f"**Gênero:** {safe_display(candidate_data.get('genero', 'N/A'))}")
+            st.write(f"**Área:** {safe_display(candidate_data.get('area_atuacao', 'N/A'))}")
+            st.write(f"**Última experiência:** {safe_display(candidate_data.get('ultima_experiencia', 'N/A'))}")
+            
+            # 🟢 NOVA REMUNERAÇÃO (Salário) - Usando a sua função format_currency
+            salary = candidate_data.get("remuneracao", 0) # Usando a coluna 'remuneracao'
+            st.write(f"**Salário/Remuneração:** {format_currency(salary)}")
+
+            # ... (código para links de e-mail/linkedin)
+            links = []
+            if pd.notna(candidate_data.get("email", None)):
+                links.append(f"📧 [Email Profissional]({'mailto:' + str(candidate_data.get('email'))})")
+            if pd.notna(candidate_data.get("email_pessoal", None)): # Coluna adicional
+                links.append(f"📧 [Email Pessoal]({'mailto:' + str(candidate_data.get('email_pessoal'))})")
+            if pd.notna(candidate_data.get("linkedin", None)):
+                 links.append(f"🔗 [LinkedIn]({candidate_data.get('linkedin')})")
+            if links:
+                 st.write(" | ".join(links))
 
             # contatos se existirem
             links = []

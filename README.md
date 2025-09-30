@@ -1,6 +1,5 @@
-Com certeza! Para garantir que a documentação do seu projeto fique profissional e com a formatação correta no GitHub, usei uma estrutura de README.md que enfatiza a clareza, os blocos de código (para evitar problemas de alinhamento) e o fluxo do projeto.
+🚀 Datathon — RECRUT.AI
 
-🚀 Datathon — AI Recruitment: Plataforma de Match Inteligente
 📌 Visão Geral
 Este projeto desenvolve uma Plataforma de Otimização de Recrutamento e Seleção que utiliza Deep Learning e Processamento de Linguagem Natural (NLP) semântico para realizar o match inteligente entre currículos (CVs) e vagas.
 

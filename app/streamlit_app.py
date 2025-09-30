@@ -49,9 +49,10 @@ MODEL_FILE = "modelo_match_xgboost.pkl"
 ENCODER_FILE = "encoder_le.pkl"
 
 # Colunas para o embedding e IDs
+# 🚨 Verifique este nome: Se no seu CSV for 'id' ou outro nome, altere AQUI!
 CV_TEXT_COL = 'curriculo_pt' 
 VAGA_ID_COL = 'id' 
-CANDIDATO_ID_COL = 'id_candidato'
+CANDIDATO_ID_COL = 'id_candidato' 
 
 # Coluna para o texto combinado da vaga (Criada em load_data)
 VAGA_TEXT_COL = 'vaga_text' 
@@ -172,71 +173,72 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
     cdf = pd.DataFrame()
     vdf = pd.DataFrame()
 
+    # --- Carregar Candidatos ---
     try:
         fs = get_s3_fs()
         
-        # Carregar Candidatos
         candidatos_s3_path = f"{S3_BUCKET}/data/{CANDIDATOS_FILE}"
         st.info(f"📁 Carregando candidatos de: s3://{candidatos_s3_path}")
         
         if not fs.exists(candidatos_s3_path):
-            st.error(f"❌ Arquivo de candidatos não encontrado: s3://{candidatos_s3_path}")
-        else:
-            with fs.open(candidatos_s3_path, 'rb') as f:
-                # CORREÇÃO: Leitura com encoding e limite de linhas
-                cdf = pd.read_csv(f, nrows=_max_rows, encoding='latin-1') 
-            
-            # VALIDAÇÃO DE COLUNA DE CV
-            if CV_TEXT_COL not in cdf.columns:
-                 raise ValueError(f"O arquivo de candidatos não contém a coluna necessária: ['{CV_TEXT_COL}']")
-                 
-            # Limpeza básica dos dados
-            cdf = cdf.dropna(subset=[CV_TEXT_COL, CANDIDATO_ID_COL])
-            cdf[CV_TEXT_COL] = cdf[CV_TEXT_COL].astype(str)
-            
-            log_messages.append(f"✅ Candidatos: {len(cdf):,} registros")
+            raise FileNotFoundError(f"Arquivo não encontrado: s3://{candidatos_s3_path}")
+        
+        with fs.open(candidatos_s3_path, 'rb') as f:
+            cdf = pd.read_csv(f, nrows=_max_rows, encoding='latin-1') 
+        
+        # 🎯 VALIDAÇÃO DAS COLUNAS ESSENCIAIS DOS CANDIDATOS
+        required_candidato_cols = [CANDIDATO_ID_COL, CV_TEXT_COL]
+        if not all(col in cdf.columns for col in required_candidato_cols):
+             missing_cols = [col for col in required_candidato_cols if col not in cdf.columns]
+             # Levanta um erro específico que reflete o problema
+             raise KeyError(f"O arquivo de candidatos não contém as colunas necessárias: {missing_cols}. Revise a variável CANDIDATO_ID_COL ou CV_TEXT_COL.")
+             
+        # Limpeza básica dos dados
+        cdf = cdf.dropna(subset=required_candidato_cols)
+        cdf[CV_TEXT_COL] = cdf[CV_TEXT_COL].astype(str)
+        
+        log_messages.append(f"✅ Candidatos: {len(cdf):,} registros")
 
     except Exception as e:
         log_messages.append(f"❌ Erro ao carregar candidatos: {str(e)}")
         # Garante que cdf seja vazio em caso de erro.
         cdf = pd.DataFrame() 
 
+    # --- Carregar Vagas ---
     try:
         # Carregar Vagas
         vagas_s3_path = f"{S3_BUCKET}/data/{VAGAS_FILE}"
         st.info(f"📁 Carregando vagas de: s3://{vagas_s3_path}")
         
         if not fs.exists(vagas_s3_path):
-            st.error(f"❌ Arquivo de vagas não encontrado: s3://{vagas_s3_path}")
+            raise FileNotFoundError(f"Arquivo não encontrado: s3://{vagas_s3_path}")
+        
+        with fs.open(vagas_s3_path, 'rb') as f:
+            vdf = pd.read_csv(f, encoding='latin-1')
+        
+        # VALIDAÇÃO DAS COLUNAS ESSENCIAIS
+        required_vaga_cols = [VAGA_ID_COL, 'titulo_vaga']
+        if not all(col in vdf.columns for col in required_vaga_cols):
+             missing_cols = [col for col in required_vaga_cols if col not in vdf.columns]
+             raise KeyError(f"O arquivo de vagas não contém as colunas necessárias: {missing_cols}")
+             
+        # CRIAÇÃO DA COLUNA VAGA_TEXT (texto combinado)
+        text_cols_to_combine = [
+            'titulo_vaga', 'objetivo_vaga', 'nivel_profissional',
+            'principais_atividades', 'competencias', 'habilidades_comportamentais'
+        ]
+        
+        existing_text_cols = [col for col in text_cols_to_combine if col in vdf.columns]
+        
+        if len(existing_text_cols) > 0:
+            vdf[VAGA_TEXT_COL] = vdf[existing_text_cols].fillna('').astype(str).agg(' '.join, axis=1)
         else:
-            with fs.open(vagas_s3_path, 'rb') as f:
-                # CORREÇÃO: Leitura com encoding
-                vdf = pd.read_csv(f, encoding='latin-1')
-            
-            # VALIDAÇÃO DAS COLUNAS ESSENCIAIS
-            required_vaga_cols = [VAGA_ID_COL, 'titulo_vaga']
-            if not all(col in vdf.columns for col in required_vaga_cols):
-                 missing_cols = [col for col in required_vaga_cols if col not in vdf.columns]
-                 raise ValueError(f"O arquivo de vagas não contém as colunas necessárias: {missing_cols}")
-                 
-            # CRIAÇÃO DA COLUNA VAGA_TEXT (texto combinado)
-            text_cols_to_combine = [
-                'titulo_vaga', 'objetivo_vaga', 'nivel_profissional',
-                'principais_atividades', 'competencias', 'habilidades_comportamentais'
-            ]
-            
-            # Junta os textos das colunas
-            existing_text_cols = [col for col in text_cols_to_combine if col in vdf.columns]
-            
-            if len(existing_text_cols) > 0:
-                vdf[VAGA_TEXT_COL] = vdf[existing_text_cols].fillna('').astype(str).agg(' '.join, axis=1)
-            else:
-                 raise ValueError(f"Nenhuma coluna base encontrada para criar a coluna '{VAGA_TEXT_COL}'. Verifique seu arquivo CSV.")
+             raise ValueError(f"Nenhuma coluna base encontrada para criar a coluna '{VAGA_TEXT_COL}'. Verifique seu arquivo CSV.")
 
-            # Limpeza básica das vagas 
-            vdf = vdf.dropna(subset=[VAGA_TEXT_COL, VAGA_ID_COL])
-            
-            log_messages.append(f"✅ Vagas: {len(vdf):,} registros")
+        # Limpeza básica das vagas 
+        vdf = vdf.dropna(subset=[VAGA_TEXT_COL, VAGA_ID_COL])
+        
+        log_messages.append(f"✅ Vagas: {len(vdf):,} registros")
 
     except Exception as e:
         log_messages.append(f"❌ Erro ao carregar vagas: {str(e)}")
@@ -256,14 +258,13 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
     # Validação final
     if cdf.empty or vdf.empty:
         st.error("🚨 Crítico: Dados insuficientes para continuar.")
-        st.info("""
+        st.info(f"""
+        **Atenção ao Erro nos Candidatos:**
+        O problema parece estar na coluna de ID. Se a mensagem do seu log foi `❌ Erro ao carregar candidatos: ['id_candidato']`, isso indica que a coluna **'{CANDIDATO_ID_COL}'** não existe no seu arquivo **applicants_clean.csv**.
+        
         **Solução:**
-        1. **Corrija os nomes das colunas** no seu script Python (Seção 2: CV_TEXT_COL, VAGA_ID_COL).
-        2. Verifique se os arquivos existem no S3
-        3. Verifique as permissões do bucket (erro 'Forbidden')
-        4. Confirme os nomes dos arquivos:
-             - applicants_clean.csv
-             - vagas_clean.csv
+        1. Confirme o nome correto da coluna de ID no seu `applicants_clean.csv`.
+        2. Altere a variável **`CANDIDATO_ID_COL`** na **Seção 2** do código para o nome correto (ex: se for apenas 'id', mude para `CANDIDATO_ID_COL = 'id'`).
         """)
         st.stop()
     
@@ -458,7 +459,7 @@ def display_candidate_card(candidate_data: pd.Series, rank: int):
             )
         
         with st.expander("📄 Ver CV Resumido"):
-            # CORRIGIDO: Usa a variável global CV_TEXT_COL
+            # Usa a variável global CV_TEXT_COL
             cv_text = candidate_data.get(CV_TEXT_COL, '')
             preview = cv_text[:300] + "..." if len(cv_text) > 300 else cv_text
             st.text(preview)
@@ -530,7 +531,7 @@ def main():
         cdf, vdf = load_data(max_candidates)
         
         # Seleção de vaga
-        # CORRIGIDO: Usa VAGA_ID_COL para indexação e identificação
+        # Usa VAGA_ID_COL para indexação e identificação
         vaga_options = vdf.set_index(VAGA_ID_COL)['titulo_vaga'].to_dict()
         selected_vaga_id = st.selectbox(
             "Selecione a Vaga:",
@@ -570,7 +571,7 @@ def main():
     # Processar matching
     if selected_vaga_id:
         # Obter dados da vaga selecionada
-        # CORRIGIDO: Usa VAGA_ID_COL para filtrar
+        # Usa VAGA_ID_COL para filtrar
         vaga_row = vdf[vdf[VAGA_ID_COL] == selected_vaga_id].iloc[0]
         # Obter o índice do embedding da vaga
         vaga_index = vdf.index.get_loc(vaga_row.name)
@@ -648,7 +649,6 @@ def main():
 
 if __name__ == "__main__":
     # Inicializar session state para cache de embeddings (se ainda não existir)
-    # A função get_or_create_embeddings gerencia a chave específica dentro de session state.
     if 'embeddings_cache' not in st.session_state:
         st.session_state.embeddings_cache = {}
     

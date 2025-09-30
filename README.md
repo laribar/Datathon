@@ -1,24 +1,35 @@
-🚀 Datathon — RECRUT.AI
+🚀 Projeto RECRUT.AI: Otimização Inteligente de Recrutamento com Deep Learning
+📌 Visão Geral da Solução
+O RECRUT.AI é uma plataforma de Otimização de Recrutamento e Seleção que nasceu com o objetivo de revolucionar a triagem de currículos. Ao invés de depender de filtros manuais e buscas por palavras-chave (métodos tradicionais e demorados do RH), o projeto aplica Deep Learning e Processamento de Linguagem Natural (NLP) semântico para calcular um match inteligente entre o significado completo das vagas e os currículos dos candidatos.
 
-📌 Visão Geral
-Este projeto desenvolve uma Plataforma de Otimização de Recrutamento e Seleção que utiliza Deep Learning e Processamento de Linguagem Natural (NLP) semântico para realizar o match inteligente entre currículos (CVs) e vagas.
+O foco central é reduzir drasticamente o tempo de triagem e aumentar a qualidade das pré-seleções, fornecendo ao time de RH um ranking preciso dos candidatos com maior Potencial de Aderência (Probabilidade de Match).
 
-O objetivo principal é reduzir o tempo gasto pelo RH em triagens manuais, aplicando modelos avançados de similaridade semântica para ranqueamento e um classificador robusto para predição de compatibilidade.
+✨ Arquitetura de Deep Learning e Modelos
+A inteligência do RECRUT.AI se apoia em dois pilares de Machine Learning para processar e classificar informações textuais complexas:
 
-✨ Pilares da Solução
-Embeddings Semânticos: Uso de Sentence Transformers (SBERT) para codificar o significado de CVs e vagas.
+1. Deep Learning Semântico (Sentence Transformers - SBERT)
+Tipo de Deep Learning/Modelo: Embeddings de Linguagem (NLP), utilizando o modelo Sentence Transformers (SBERT), especificamente a arquitetura all-MiniLM-L6-v2.
 
-Classificação Avançada: Utilização do XGBoost para prever a probabilidade de match (compatibilidade).
+Função: O SBERT é o motor semântico. Ele converte o texto integral dos currículos (CVs) e o texto completo das vagas em vetores numéricos de 384 dimensões (embeddings).
 
-Interface de Usuário: Dashboard interativo construído com Streamlit.
+Vantagem: Essa codificação captura o significado contextual das palavras e sentenças, não apenas a presença de termos. Isso permite que a plataforma identifique um candidato com "Conhecimento em nuvem AWS" como compatível com uma vaga que pede "Experiência com Amazon Web Services", mesmo que as palavras não sejam idênticas.
 
-API Escalável: Rotas de predição implementadas com FastAPI.
+2. Classificação Avançada (XGBoost)
+Tipo de Modelo: Boosting de Árvores de Decisão, utilizando o algoritmo XGBoost.
 
-Infraestrutura Cloud: Deploy via Render e armazenamento de modelos e dados grandes na AWS S3.
+Função: Após a fase de embedding, o modelo XGBoost atua como um Classificador Robusto. Ele recebe como input a concatenação dos vetores semânticos do Candidato e da Vaga (além de possíveis features de metadados) e é treinado para prever a Probabilidade de Match (uma pontuação de 0 a 1) de que aquele candidato é o ideal para a vaga.
 
+Vantagem: O XGBoost é conhecido por sua alta precisão e velocidade, fornecendo um ranking final de candidatos ordenado por sua compatibilidade predita.
+
+🌐 Pilares de Infraestrutura e Implementação
+Pilar	Tecnologia/Ferramenta	Descrição
+Interface de Usuário	Streamlit	Dashboard interativo e ágil para seleção de vagas, visualização do ranking de candidatos, e análise explicativa (Explicabilidade).
+Infraestrutura Cloud	AWS S3	Armazenamento persistente de datasets brutos, modelos ML grandes (XGBoost e SBERT) e os embeddings pré-calculados, garantindo escalabilidade.
+
+
+Export to Sheets
 🔗 Acesso ao Aplicativo
-O dashboard está publicado e pode ser acessado em:
-
+O dashboard interativo do RECRUT.AI está publicado e pode ser acessado em:
 👉 https://recrutai.streamlit.app/
 
 Os arquivos mais pesados (modelos e dados limpos) foram colocados na AWS S3 para facilitar o deploy e garantir a performance, com o Streamlit consumindo diretamente da nuvem.

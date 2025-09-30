@@ -65,7 +65,7 @@ CANDIDATO_ID_COL = "id"
 # Coluna para o texto combinado da vaga
 VAGA_TEXT_COL = "vaga_text"
 
-# NOVO: Colunas de metadados dos candidatos para exibição na UI
+# Colunas de metadados dos candidatos para exibição na UI
 CANDIDATO_METADATA_COLS = [
     "cidade",
     "estado",
@@ -83,10 +83,10 @@ CANDIDATO_METADATA_COLS = [
     "remuneracao",
     "local",
     "email_pessoal",
-    "genero" # Adicionado para garantir que esteja na lista
+    "genero"
 ]
 
-# NOVO: Limite de linhas a carregar na inicialização para evitar timeouts no Streamlit Cloud
+# Limite de linhas a carregar na inicialização para evitar timeouts no Streamlit Cloud
 MAX_ROWS_INITIAL_LOAD = 10000
 # ---------------------------------------------
 # 🔎 Helpers de explicabilidade
@@ -109,7 +109,6 @@ def _decode_text(text: str) -> str:
         return ""
     try:
         # A codificação mais comum de erro em CSV brasileiro é latin-1 lendo utf-8
-        # Esta linha assume que o texto foi lido como latin-1 mas é utf-8.
         return text.encode('latin-1').decode('utf-8', 'ignore')
     except:
         return text
@@ -149,7 +148,6 @@ def top_relevant_sentences(
     sent_emb = _l2_normalize(sent_emb)
     
     # Produto escalar entre a matriz de sentenças e o vetor da vaga
-    # Requer que vaga_embedding seja 1D
     scores = (sent_emb @ vaga_embedding.reshape(-1)).reshape(-1) 
     k = min(k, len(sents))
     # Encontra os índices dos top K scores
@@ -187,11 +185,8 @@ def _hash_df(df: pd.DataFrame, cols: List[str], sample_rows: int = 0) -> str:
     if not set(cols).issubset(df.columns):
         return f"missing_cols_{hash(tuple(cols))}"
     if sample_rows and len(df) > sample_rows:
-        # Usa uma amostra para evitar hash demorado em 42k+ rows, mas garante que o hash mude se a amostra mudar
         df = df.sample(sample_rows, random_state=42)
-    # Aumenta a robustez do hash forçando a conversão para string antes do hash
     s = pd.util.hash_pandas_object(df[cols].astype(str).fillna(""), index=False).values
-    # Ajusta o cálculo do hash para ser mais robusto em grandes arrays
     return str(int(s[: min(2000, len(s))].sum())) if len(s) else "empty"
 
 def _l2_normalize(M: np.ndarray) -> np.ndarray:
@@ -204,7 +199,6 @@ def get_s3_fs():
     """Retorna o filesystem do S3 com configuração correta."""
     try:
         if not os.environ.get("AWS_ACCESS_KEY_ID"):
-             # Simula falha se não houver credenciais
              raise RuntimeError("Credenciais AWS não configuradas. Verifique st.secrets.")
 
         fs = s3fs.S3FileSystem(anon=False)
@@ -238,12 +232,9 @@ def load_encoder(model_name: str = "all-MiniLM-L6-v2") -> SentenceTransformer:
         fs = get_s3_fs()
         sbert_s3_path = f"{S3_BUCKET}/{SBERT_MODEL_DIR}"
         test_file_path = f"{sbert_s3_path}/config.json"
-        
-        # O SBERT salva o modelo baixado em um cache local. Usaremos um diretório temporário
         local_cache_path = os.path.join(tempfile.gettempdir(), SBERT_MODEL_DIR)
 
         if fs.exists(test_file_path):
-            # Modelo no S3, baixar para temp dir e carregar
             if not os.path.exists(local_cache_path): 
                 logger.info("Modelo SBERT encontrado em S3. Baixando para cache local...")
                 fs.get(sbert_s3_path, local_cache_path, recursive=True)
@@ -253,7 +244,6 @@ def load_encoder(model_name: str = "all-MiniLM-L6-v2") -> SentenceTransformer:
             return encoder
         else:
             logger.warning(f"Modelo SBERT não encontrado em S3. Baixando {model_name}...")
-            # Streamlit/Sentence-Transformers vai gerenciar o download para um cache interno
             encoder = SentenceTransformer(model_name)
             _ = encoder.encode(["probe"], convert_to_numpy=True)
             return encoder
@@ -261,15 +251,12 @@ def load_encoder(model_name: str = "all-MiniLM-L6-v2") -> SentenceTransformer:
     except Exception as e:
         logger.error(f"Falha ao carregar SBERT (S3 ou cache): {e}. Tentando baixar de huggingface...")
         try:
-            # Tenta o download direto como fallback
             encoder = SentenceTransformer(model_name)
             _ = encoder.encode(["probe"], convert_to_numpy=True)
             return encoder
         except Exception as e_local:
             raise RuntimeError(f"Falha crítica ao carregar SBERT de todas as fontes: {e_local}")
             
-# Removida a limpeza de diretório temporário, pois o @st.cache_resource deve gerenciar a persistência no Streamlit Cloud
-
 
 @st.cache_data(show_spinner="Carregando dados dos candidatos e vagas do S3...", ttl=900)
 def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFrame, List[str]]:
@@ -284,7 +271,6 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
         candidatos_s3_path = f"{S3_BUCKET}/data/{CANDIDATOS_FILE}"
         
         with fs.open(candidatos_s3_path, "rb") as f:
-            # APLICAÇÃO DO LIMITE: nrows = _max_rows (que é MAX_ROWS_INITIAL_LOAD ou None)
             cdf = pd.read_csv(f, nrows=_max_rows, encoding="latin-1", engine="python", on_bad_lines="skip")
 
         critical_cols = [CANDIDATO_ID_COL, CV_TEXT_COL]
@@ -306,7 +292,6 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
         vagas_s3_path = f"{S3_BUCKET}/data/{VAGAS_FILE}"
 
         with fs.open(vagas_s3_path, "rb") as f:
-            # REMOÇÃO DO LIMITE: nrows não é usado aqui, carregando todas as vagas
             vdf = pd.read_csv(f, encoding="latin-1")
 
         text_cols_to_combine = ["titulo_vaga", "objetivo_vaga", "nivel_profissional", "principais_atividades", "competencias", "habilidades_comportamentais"]
@@ -318,7 +303,7 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
         # CRÍTICO: Cria a coluna combinada para ser usada no embedding
         vdf[VAGA_TEXT_COL] = vdf[existing_text_cols].fillna("").astype(str).agg(" ".join, axis=1)
 
-        # 🚨 CORREÇÃO CRÍTICA: Garante que o ID da vaga é uma string limpa e sem espaços
+        # Garante que o ID da vaga é uma string limpa e sem espaços
         if VAGA_ID_COL in vdf.columns:
             vdf[VAGA_ID_COL] = vdf[VAGA_ID_COL].astype(str).str.strip()
         
@@ -336,11 +321,7 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
 
 @st.cache_data(
     show_spinner="Gerenciando cache de embeddings...",
-    # CRÍTICO: Usar um TTL (Time to Live) para o cache de embeddings,
-    # garantindo que não expire em reloads rápidos, mas invalide a cada 1 hora (3600s).
     ttl=3600,
-    # CRÍTICO: Não fazer hash do objeto SBERT (encoder), garantindo que
-    # o cache persista mesmo se o objeto do encoder mudar de endereço de memória.
     hash_funcs={SentenceTransformer: lambda _: None}, 
 )
 def get_or_create_embeddings(
@@ -355,7 +336,6 @@ def get_or_create_embeddings(
         return np.zeros((0, encoder.get_sentence_embedding_dimension()), dtype="float32")
 
     content_hash = _hash_df(df, [text_col], sample_rows=20000)
-    # A cache key agora inclui o hash, o que garante a invalidação
     cache_key = f"emb_{filename}_{content_hash}" 
 
     # 1. Tentar cache de sessão/memória do Streamlit
@@ -384,23 +364,19 @@ def get_or_create_embeddings(
     # 3. Gerar novos embeddings (com barra de progresso)
     texts = df[text_col].astype(str).tolist()
     
-    # Reduzir overhead da barra de progresso em Streamlit Cloud
     with st.spinner(f"🧠 Criando embeddings para {len(texts):,} registros. Pode demorar..."):
         batch_size = 64
         all_embeddings: List[np.ndarray] = []
         
-        # Simula a barra de progresso no loop
         progress_bar = st.progress(0.0)
         status_text = st.empty()
 
         for i in range(0, len(texts), batch_size):
             batch_texts = texts[i : i + batch_size]
             
-            # Garante dtype float32
             batch_embeddings = encoder.encode(batch_texts, show_progress_bar=False, convert_to_numpy=True, batch_size=32).astype("float32")
             all_embeddings.append(batch_embeddings)
 
-            # Atualização da barra (mais rara para reduzir overhead de rede)
             if i % (batch_size * 10) == 0:  
                 progress = min((i + batch_size) / len(texts), 1.0)
                 progress_bar.progress(progress)
@@ -450,7 +426,6 @@ def predict_match_and_rank(
     vaga_embedding = vaga_embedding.reshape(-1).astype("float32")
 
     # 1. Filtrar Top K por Similaridade (Primeira Peneira Rápida)
-    # A multiplicação de matrizes é mais rápida com numpy e garante o produto escalar (similaridade)
     sims = cand_emb @ vaga_embedding
     k = min(top_k, n_cand)
     # Filtra os índices dos top k
@@ -460,10 +435,8 @@ def predict_match_and_rank(
 
     # 2. Construção da Matriz de Predição
     X_left = all_candidate_embeddings[top_idx]
-    # Cria uma matriz com a vaga_embedding repetida k vezes para o hstack
     X_right = np.broadcast_to(vaga_embedding, X_left.shape) 
     
-    # Matriz para XGBoost
     X_predict = np.hstack([X_left, X_right]).astype(np.float32, copy=False)
     
     # 3. Predição
@@ -472,12 +445,10 @@ def predict_match_and_rank(
             dtest = xgb.DMatrix(X_predict)
             predictions = bst.predict(dtest)
         else:
-            # Assume Scikit-learn API com predict_proba
             if hasattr(bst, "predict_proba"):
                 proba = bst.predict_proba(X_predict)
                 predictions = proba[:, 1] if proba.ndim == 2 and proba.shape[1] > 1 else proba.ravel()
             else:
-                # Fallback para predict simples
                 predictions = bst.predict(X_predict).astype(np.float32, copy=False)
 
     except Exception as e:
@@ -502,11 +473,9 @@ def save_dataframe_to_s3(df: pd.DataFrame, filename: str, s3_dir: str = S3_DATA_
         fs = get_s3_fs()
         s3_path = f"{s3_dir.rstrip('/')}/{filename}"
 
-        # Usando io.StringIO para garantir o formato CSV
         csv_buffer = io.StringIO()
         df.to_csv(csv_buffer, index=False, encoding='utf-8') 
         
-        # Salva o arquivo no S3
         with fs.open(s3_path, 'w', encoding='utf-8') as f:
             f.write(csv_buffer.getvalue())
 
@@ -531,11 +500,9 @@ def add_new_data_point(
     new_row_series[id_col] = new_id
     
     df_temp = pd.DataFrame(columns=df.columns)
-    # Reindexa a nova linha para ter as mesmas colunas que o DF original
     new_row_final = new_row_series.reindex(df.columns).fillna(pd.NA)
     df_temp.loc[0] = new_row_final
     
-    # Aplica a decodificação e limpeza ao texto
     df_temp[text_col] = df_temp[text_col].apply(_decode_text)
 
     updated_df = pd.concat([df, df_temp], ignore_index=True)
@@ -618,12 +585,11 @@ def display_candidate_card(candidate_data: pd.Series, rank: int, vaga_row: pd.Se
 
         # Explicabilidade
         with st.expander("🔎 Por que este candidato apareceu aqui? (trechos mais relevantes do CV)"):
-            # O embedding da vaga já é normalizado e float32
             highlights = top_relevant_sentences(
                 candidate_data.get(CANDIDATO_ID_COL, f"cand_{rank}"),
                 vaga_row.get(VAGA_ID_COL, "vaga"),
                 str(candidate_data.get(CV_TEXT_COL, "")),
-                vaga_embedding, # Passamos o embedding da vaga diretamente
+                vaga_embedding, 
                 encoder,
                 k=3
             )
@@ -678,7 +644,6 @@ def page_admin(cdf: pd.DataFrame, vdf: pd.DataFrame):
 
         if uploaded_file and st.button(f"📥 Substituir {data_type} no S3 e Recarregar", key="upload_s3"):
             try:
-                # O upload pode vir com qualquer encoding, tentamos o mais comum ou utf-8
                 try:
                     new_df = pd.read_csv(uploaded_file, encoding='latin-1', engine="python", on_bad_lines="skip")
                 except:
@@ -727,7 +692,7 @@ def page_admin(cdf: pd.DataFrame, vdf: pd.DataFrame):
                         "escolaridade": escolaridade,
                         "area_atuacao": area_atuacao,
                         CV_TEXT_COL: cv_text,
-                        CANDIDATO_ID_COL: None # Será preenchido por add_new_data_point
+                        CANDIDATO_ID_COL: None 
                     }
                     
                     updated_cdf = add_new_data_point(cdf.drop(columns=[CV_TEXT_COL], errors='ignore'), new_data, CANDIDATO_ID_COL, CV_TEXT_COL, id_prefix="custom_cand")
@@ -754,10 +719,9 @@ def page_admin(cdf: pd.DataFrame, vdf: pd.DataFrame):
                         "objetivo_vaga": objetivo,
                         "principais_atividades": atividades,
                         VAGA_TEXT_COL: f"{titulo} {objetivo} {atividades}",
-                        VAGA_ID_COL: None # Será preenchido por add_new_data_point
+                        VAGA_ID_COL: None
                     }
                     
-                    # Cria um DF temporário com as colunas necessárias para a função add_new_data_point
                     temp_vdf_cols = list(set(vdf.columns) | set(new_data.keys()))
                     temp_vdf = vdf.reindex(columns=temp_vdf_cols).copy()
                     
@@ -825,7 +789,6 @@ def page_dashboard(cdf: pd.DataFrame, vdf: pd.DataFrame):
     if CV_TEXT_COL in cdf.columns:
         text = " ".join(cdf[CV_TEXT_COL].dropna().astype(str).sample(min(1000, len(cdf))).tolist())
         
-        # Cria a nuvem de palavras
         wordcloud = WordCloud(
             width=800, 
             height=400, 
@@ -834,7 +797,6 @@ def page_dashboard(cdf: pd.DataFrame, vdf: pd.DataFrame):
             stopwords=set(["de", "e", "a", "o", "que", "do", "da", "em", "um", "uma", "para", "com", "os", "as", "você", "se", "no", "na"])
         ).generate(text)
         
-        # Converte para imagem e exibe
         fig_wc = px.imshow(wordcloud.to_array(), title="Nuvem de Palavras nos Currículos (Amostra)")
         fig_wc.update_layout(xaxis_visible=False, yaxis_visible=False, coloraxis_showscale=False)
         col_c2.plotly_chart(fig_wc, use_container_width=True)
@@ -848,7 +810,6 @@ def page_dashboard(cdf: pd.DataFrame, vdf: pd.DataFrame):
     col_v1, col_v2 = st.columns(2)
     
     if "titulo_vaga" in vdf.columns:
-        # Simplifica títulos para áreas principais (ex: 'Analista de Dados Senior' -> 'Analista de Dados')
         vdf['titulo_limpo'] = vdf['titulo_vaga'].astype(str).str.split().str[:2].str.join(' ')
         area_counts = vdf['titulo_limpo'].value_counts().nlargest(15).reset_index()
         area_counts.columns = ["Título Simplificado", "Contagem"]
@@ -884,16 +845,15 @@ def page_dashboard(cdf: pd.DataFrame, vdf: pd.DataFrame):
 def page_matching(cdf: pd.DataFrame, vdf: pd.DataFrame, encoder: SentenceTransformer, bst: Any):
     """Página principal de match crítico."""
     
-    # Adiciona checagem defensiva de objetos críticos
     if cdf.empty or vdf.empty or encoder is None or bst is None:
         st.error("🚨 Dados ou Modelos não carregados. Verifique o 'Status de Carregamento' e recarregue a aplicação.")
         return
 
     st.header("🎯 Match Crítico: Vaga -> Candidatos")
-    st.info(f"Modelo de Embeddings: **all-MiniLM-L6-v2**") # CORREÇÃO: Usando o nome fixo para evitar AttributeError
+    st.info(f"Modelo de Embeddings: **all-MiniLM-L6-v2**")
     
     # 1. Seleção da Vaga
-    vagas_display = [f"ID:{r[VAGA_ID_COL]}) - {r['titulo_vaga']}" for _, r in vdf.iterrows()]
+    vagas_display = [f"{r['titulo_vaga']} (ID:{r[VAGA_ID_COL]})" for _, r in vdf.iterrows()]
     vagas_display.insert(0, "-- Selecione uma Vaga --")
     selected_vaga_display = st.selectbox(
         "Selecione uma Vaga da Base de Dados:",
@@ -906,24 +866,21 @@ def page_matching(cdf: pd.DataFrame, vdf: pd.DataFrame, encoder: SentenceTransfo
         st.info("Aguardando seleção de vaga para iniciar o matching.")
         return
 
-    # 2. Extração do ID da Vaga Selecionada
-    
-    # CORREÇÃO CRÍTICA DO ERRO '7057)':
-    # A regex agora captura tudo que vem após 'ID:' e antes de ')'.
-    # Isso garante que o ID numérico seja extraído corretamente, eliminando o parênteses final.
+    # 2. Extração do ID da Vaga Selecionada (CORREÇÃO APLICADA AQUI)
     match = re.search(r'ID:([^)]+)\)', selected_vaga_display)
+    
     if not match:
-        st.error(f"Não foi possível extrair o ID da vaga selecionada. Formato esperado: ID:XXX) - Título")
+        st.error(f"❌ Erro de extração do ID da vaga. Formato esperado: Título (ID:XXX)")
+        st.caption(f"Valor lido: {selected_vaga_display}")
         return
         
     vaga_id_match = match.group(1).strip()
     
     # 3. Busca da Vaga no DataFrame
-    # Note: O ID no DF (VAGA_ID_COL) foi limpo e é uma string (load_data)
     vdf_filtered = vdf[vdf[VAGA_ID_COL].astype(str).str.strip() == vaga_id_match]
 
     if vdf_filtered.empty:
-        st.error(f"A vaga com ID '{vaga_id_match}' não foi encontrada na base de dados de vagas carregada. Recarregue os dados ou selecione outra vaga.")
+        st.error(f"❌ A vaga com ID '{vaga_id_match}' não foi encontrada na base de dados de vagas carregada. Recarregue os dados ou selecione outra vaga.")
         return
 
     vaga_row = vdf_filtered.iloc[0]
@@ -936,10 +893,7 @@ def page_matching(cdf: pd.DataFrame, vdf: pd.DataFrame, encoder: SentenceTransfo
 
     # 4. Gerenciamento e Carregamento dos Embeddings
     with st.spinner("Preparando embeddings (Candidatos e Vaga)..."):
-        # Carrega/cria embeddings dos candidatos
         c_emb = get_or_create_embeddings(cdf, CV_TEXT_COL, EMBEDDINGS_FILE, encoder)
-        
-        # Carrega/cria embeddings das vagas
         v_emb_all = get_or_create_embeddings(vdf, VAGA_TEXT_COL, VAGAS_EMBEDDINGS_FILE, encoder)
         
         if vaga_index >= len(v_emb_all):
@@ -973,7 +927,6 @@ def page_matching(cdf: pd.DataFrame, vdf: pd.DataFrame, encoder: SentenceTransfo
     # 6. Exibição do Ranking
     st.subheader(f"🏆 Top {len(results_df)} Candidatos para a Vaga")
     
-    # Slider para visualizar os top N
     n_display = st.slider("Mostrar Top N Candidatos:", 5, min(100, len(results_df)), 10)
     
     for rank, (idx, row) in enumerate(results_df.head(n_display).iterrows(), 1):
@@ -985,18 +938,26 @@ def page_matching(cdf: pd.DataFrame, vdf: pd.DataFrame, encoder: SentenceTransfo
 # ==============================================================================
 
 def main():
+    # Cria uma imagem placeholder para Streamlit Cloud se não existir
+    if not os.path.exists("logo.png"):
+        try:
+            from PIL import Image, ImageDraw
+            img = Image.new('RGB', (100, 100), color = (7, 54, 66))
+            d = ImageDraw.Draw(img)
+            d.text((10,10), "LOGO", fill=(255, 255, 255))
+            img.save("logo.png")
+        except:
+             pass 
+
     st.sidebar.image("logo.png", use_column_width=True)
     st.sidebar.title("Navegação")
     
-    # 1. Carregamento de Dados (usa um limite inicial para maior velocidade)
-    # Se MAX_ROWS_INITIAL_LOAD > 0, carrega só um subconjunto de candidatos.
-    # O usuário poderá carregar a base completa no Admin.
+    # 1. Carregamento de Dados
     cdf, vdf, log_messages = load_data(MAX_ROWS_INITIAL_LOAD)
     
     # 2. Carregamento de Modelos
     bst = None
     encoder = None
-    encoder_le = None
     
     data_loaded_ok = display_load_logs(log_messages)
 
@@ -1013,14 +974,12 @@ def main():
     # 3. Definição da Página
     
     if cdf.empty or vdf.empty or bst is None or encoder is None:
-        # Força para a página Admin se os dados essenciais não carregarem
         page = st.sidebar.radio(
             "Selecione a Página (Acesso restrito)", 
             ["🛠️ Administração", "📊 Dashboard"], 
             index=0,
         )
     else:
-        # Páginas normais
         page = st.sidebar.radio(
             "Selecione a Página", 
             ["🎯 Match Crítico", "📊 Dashboard", "🛠️ Administração"], 
@@ -1040,16 +999,4 @@ def main():
 
 
 if __name__ == "__main__":
-    # Garante que a imagem do logo exista para evitar erro
-    if not os.path.exists("logo.png"):
-        try:
-            # Cria uma imagem placeholder para Streamlit Cloud (caso não tenha sido upada)
-            from PIL import Image, ImageDraw, ImageFont
-            img = Image.new('RGB', (100, 100), color = (7, 54, 66))
-            d = ImageDraw.Draw(img)
-            d.text((10,10), "LOGO", fill=(255, 255, 255))
-            img.save("logo.png")
-        except:
-             pass # Falha silenciosa se PIL não estiver instalado
-             
     main()

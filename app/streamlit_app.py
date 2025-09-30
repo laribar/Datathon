@@ -797,6 +797,7 @@ def main():
         colm3.metric("Candidatos Analisados", f"{len(results_df):,}")
 
         # Paginação
+        # Paginação
         total_pages = (len(results_df) + top_n - 1) // top_n
         page = st.number_input("Página", min_value=1, max_value=max(1, total_pages), value=1, step=1)
         start = (page - 1) * top_n
@@ -806,6 +807,7 @@ def main():
 
         for _, candidate in results_df.iloc[start:end].iterrows():
             display_candidate_card(candidate, candidate['rank'], vaga_row, selected_vaga_emb, encoder)
+
 
 if __name__ == '__main__':
     main()

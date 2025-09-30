@@ -63,6 +63,15 @@ CANDIDATO_ID_COL = "id"
 # Coluna para o texto combinado da vaga
 VAGA_TEXT_COL = "vaga_text"
 
+# 🟢 NOVO: Colunas de metadados dos candidatos para exibição na UI
+CANDIDATO_METADATA_COLS = [
+    "status",
+    "nivel_hierarquico", 
+    "genero", 
+    "salario_atual",
+    # Adicione aqui outras colunas que você queira exibir
+]
+
 # --- 🎯 INJEÇÃO DE SECRETS DO STREAMLIT CLOUD ---
 if "aws" in st.secrets:
     try:
@@ -177,8 +186,7 @@ def load_encoder(model_name: str = "all-MiniLM-L6-v2") -> SentenceTransformer:
 def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFrame, List[str]]:
     """
     Carrega os DataFrames de candidatos e vagas do S3.
-    Retorna os DataFrames e uma lista de logs/mensagens para exibição na UI.
-    CORREÇÃO: Inclui reset_index(drop=True) para garantir índice posicional para .iloc.
+    CORREÇÃO: Inclui colunas de metadados dos candidatos e garante a preservação delas.
     """
     log_messages: List[str] = []
     cdf = pd.DataFrame()
@@ -202,15 +210,24 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
                 on_bad_lines="skip",
             )
 
-        required_candidato_cols = [CANDIDATO_ID_COL, CV_TEXT_COL]
-        missing_cols = [col for col in required_candidato_cols if col not in cdf.columns]
-        if missing_cols:
-            raise KeyError(f"Candidatos sem colunas: {missing_cols}")
+        # 🟢 AJUSTE: Incluir metadados nas colunas obrigatórias
+        required_candidato_cols = [CANDIDATO_ID_COL, CV_TEXT_COL] + CANDIDATO_METADATA_COLS
+        
+        # 1. Checagem de colunas CRÍTICAS (ID e CV)
+        critical_cols = [CANDIDATO_ID_COL, CV_TEXT_COL]
+        missing_critical_cols = [col for col in critical_cols if col not in cdf.columns]
+        if missing_critical_cols:
+            raise KeyError(f"Erro ao carregar candidatos: colunas críticas ausentes: {missing_critical_cols}")
 
-        cdf = cdf.dropna(subset=required_candidato_cols).reset_index(drop=True)
+        # 2. Drop NaNs apenas nas colunas críticas e garante tipo str para o texto
+        cdf = cdf.dropna(subset=critical_cols)
         cdf[CV_TEXT_COL] = cdf[CV_TEXT_COL].astype(str)
         
-        # 🟢 CORREÇÃO CRÍTICA: Garante índice posicional contínuo
+        # 3. Preservar APENAS as colunas que existem no CSV e que são necessárias (ID, CV, Metadados)
+        cols_to_keep = [col for col in required_candidato_cols if col in cdf.columns]
+        cdf = cdf[cols_to_keep] 
+        
+        # 4. Garante índice posicional contínuo
         cdf = cdf.reset_index(drop=True) 
 
         log_messages.append(f"✅ Candidatos carregados: {len(cdf):,} registros")
@@ -251,9 +268,8 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
             raise ValueError(f"Nenhuma coluna base encontrada para criar '{VAGA_TEXT_COL}'.")
 
         vdf = vdf.dropna(subset=[VAGA_TEXT_COL, VAGA_ID_COL]).reset_index(drop=True)
-
         
-        # 🟢 CORREÇÃO: Garante índice posicional contínuo
+        # Garante índice posicional contínuo
         vdf = vdf.reset_index(drop=True)
 
         log_messages.append(f"✅ Vagas carregadas: {len(vdf):,} registros")
@@ -431,10 +447,13 @@ def predict_match_and_rank(
 # 5. FUNÇÕES AUXILIARES PARA UI
 # ==============================================================================
 
-def format_currency(value: float) -> str:
+def format_currency(value: Any) -> str:
+    """Formata valor para o padrão monetário brasileiro, tratando NaNs/tipos."""
     try:
+        # Tenta converter para float. Se for None, NaN ou string vazia, usa 0.0
+        val = float(value) if pd.notna(value) else 0.0
         # Formato brasileiro R$ X.XXX,XX
-        return f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        return f"R$ {val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     except Exception:
         return "R$ 0,00"
 
@@ -442,6 +461,7 @@ def display_candidate_card(candidate_data: pd.Series, rank: int):
     with st.container(border=True):
         col1, col2, col3 = st.columns([3, 2, 1])
 
+        # 🟢 CORREÇÃO: Usar .get() com fallback para N/A. O DataFrame cdf já tem as colunas
         with col1:
             st.subheader(f"#{rank} - {candidate_data.get(CANDIDATO_ID_COL, 'N/A')}")
             st.write(f"**Status:** {candidate_data.get('status', 'N/A')}")
@@ -449,6 +469,7 @@ def display_candidate_card(candidate_data: pd.Series, rank: int):
 
         with col2:
             st.write(f"**Gênero:** {candidate_data.get('genero', 'N/A')}")
+            # 🟢 AJUSTE: Passar o valor bruto para a função format_currency que trata o 0.0
             salary = candidate_data.get("salario_atual", 0)
             st.write(f"**Salário:** {format_currency(salary)}")
 

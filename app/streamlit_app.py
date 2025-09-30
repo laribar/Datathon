@@ -658,7 +658,7 @@ def main():
 
         # Controles de performance
         st.subheader("Performance")
-        max_candidates = st.slider("Nº Máximo de Candidatos a Carregar", 100, 10000, 5000, 100)
+        max_candidates = st.slider("Nº Máximo de Candidatos a Carregar", 100, 100000, 5000, 100)
         top_k_for_xgboost = st.slider("Top K Candidatos para Predição XGBoost", 100, 5000, 1000, 100)
         use_cache = st.checkbox("Usar Cache de Embeddings", value=True)
 

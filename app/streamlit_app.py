@@ -66,11 +66,84 @@ VAGA_TEXT_COL = "vaga_text"
 # 🟢 NOVO: Colunas de metadados dos candidatos para exibição na UI
 CANDIDATO_METADATA_COLS = [
     "status",
-    "nivel_hierarquico", 
-    "genero", 
+    "nivel_hierarquico",
+    "genero",
     "salario_atual",
-    # Adicione aqui outras colunas que você queira exibir
+    "cidade",
+    "estado",
+    "pais",
+    "idade",
+    "escolaridade",
+    "area_atuacao",
+    "tempo_experiencia",
+    "ultima_experiencia",
+    "email",
+    "linkedin",
 ]
+# ---------------------------------------------
+# 🔎 Helpers de explicabilidade
+# ---------------------------------------------
+DEFAULT_SKILLS = [
+    # tech
+    "python","java","javascript","typescript","c#","c++","sql","nosql","aws","gcp","azure",
+    "docker","kubernetes","linux","git","rest","graphql","spark","hadoop","airflow","terraform",
+    "react","vue","angular","node","django","flask",".net","spring","xgboost","pytorch","tensorflow",
+    # dados / soft
+    "etl","elt","modelagem de dados","ci/cd","devops","mlops","nlp","cv","agile","scrum","kanban"
+]
+
+def _norm(text: str) -> str:
+    return (text or "").lower()
+
+def extract_skills(vaga_text: str, extra_skills: Optional[List[str]] = None) -> List[str]:
+    """Extrai uma lista de skills-alvo a partir do texto da vaga (set simples)."""
+    base = set(DEFAULT_SKILLS + (extra_skills or []))
+    vt = _norm(vaga_text)
+    found = [s for s in base if s in vt]
+    # se achar menos de 5, ainda retorna um conjunto mínimo útil (top 10 do default)
+    return found[:20] if found else DEFAULT_SKILLS[:10]
+
+def split_sentences(text: str) -> List[str]:
+    """Split simples e robusto (sem novas deps) para sentenças do CV."""
+    if not isinstance(text, str) or not text.strip():
+        return []
+    # quebra por . ! ? e quebras de linha
+    parts = re.split(r'(?<=[\.\!\?])\s+|\n+', text.strip())
+    # remove lixo e sentenças muito curtas
+    return [p.strip() for p in parts if len(p.strip()) > 20][:60]  # no máx 60 p/ velocidade
+
+@st.cache_data(hash_funcs={SentenceTransformer: lambda _: None})
+def top_relevant_sentences(
+    candidate_id: Any,
+    vaga_id: Any,
+    cv_text: str,
+    vaga_embedding: np.ndarray,
+    encoder: SentenceTransformer,
+    k: int = 3
+) -> List[str]:
+    """
+    Retorna as k sentenças do CV mais próximas do embedding da vaga (explicabilidade).
+    Cacheia por (candidate_id, vaga_id) p/ desempenho.
+    """
+    sents = split_sentences(cv_text)
+    if not sents:
+        return []
+    # embed só as sentenças (rápido, limitei a 60 acima)
+    sent_emb = encoder.encode(sents, show_progress_bar=False, convert_to_numpy=True, batch_size=32).astype("float32")
+    # normaliza para cosine ~ produto interno
+    sent_emb = _l2_normalize(sent_emb)
+    vaga_emb = vaga_embedding.astype("float32")
+    scores = (sent_emb @ vaga_emb).reshape(-1)
+    k = min(k, len(sents))
+    top_idx = np.argpartition(scores, -k)[-k:]
+    top_idx = top_idx[np.argsort(-scores[top_idx])]
+    return [sents[i] for i in top_idx]
+
+def render_badges(items: List[str]) -> str:
+    """Gera HTML simples de 'badges' (usa unsafe_allow_html=True no st.markdown)."""
+    if not items: 
+        return "<span style='opacity:.7'>Sem correspondências</span>"
+    return " ".join([f"<span style='display:inline-block;padding:2px 8px;border-radius:999px;background:#1f6feb20;border:1px solid #1f6feb55;margin:2px 6px 2px 0;font-size:12px'>{st._escape_html(i)}</span>" for i in items[:12]])
 
 # --- 🎯 INJEÇÃO DE SECRETS DO STREAMLIT CLOUD ---
 if "aws" in st.secrets:
@@ -457,29 +530,79 @@ def format_currency(value: Any) -> str:
     except Exception:
         return "R$ 0,00"
 
-def display_candidate_card(candidate_data: pd.Series, rank: int):
+def display_candidate_card(candidate_data: pd.Series, rank: int, vaga_row: pd.Series, vaga_embedding: np.ndarray, encoder: SentenceTransformer):
     with st.container(border=True):
+        # Cabeçalho
         col1, col2, col3 = st.columns([3, 2, 1])
 
-        # 🟢 CORREÇÃO: Usar .get() com fallback para N/A. O DataFrame cdf já tem as colunas
         with col1:
             st.subheader(f"#{rank} - {candidate_data.get(CANDIDATO_ID_COL, 'N/A')}")
+            # blocos de metadados úteis
+            linha1 = []
+            if pd.notna(candidate_data.get("cidade", None)):
+                linha1.append(str(candidate_data.get("cidade")))
+            if pd.notna(candidate_data.get("estado", None)):
+                linha1.append(str(candidate_data.get("estado")))
+            if pd.notna(candidate_data.get("pais", None)):
+                linha1.append(str(candidate_data.get("pais")))
+            st.write(" | ".join(linha1) if linha1 else "Localidade: N/A")
+
             st.write(f"**Status:** {candidate_data.get('status', 'N/A')}")
             st.write(f"**Nível:** {candidate_data.get('nivel_hierarquico', 'N/A')}")
+            if pd.notna(candidate_data.get("escolaridade", None)):
+                st.write(f"**Escolaridade:** {candidate_data.get('escolaridade')}")
+            if pd.notna(candidate_data.get("tempo_experiencia", None)):
+                st.write(f"**Experiência:** {candidate_data.get('tempo_experiencia')}")
 
         with col2:
             st.write(f"**Gênero:** {candidate_data.get('genero', 'N/A')}")
-            # 🟢 AJUSTE: Passar o valor bruto para a função format_currency que trata o 0.0
+            st.write(f"**Área:** {candidate_data.get('area_atuacao', 'N/A')}")
+            st.write(f"**Última experiência:** {candidate_data.get('ultima_experiencia', 'N/A')}")
             salary = candidate_data.get("salario_atual", 0)
-            st.write(f"**Salário:** {format_currency(salary)}")
+            st.write(f"**Salário atual:** {format_currency(salary)}")
+
+            # contatos se existirem
+            links = []
+            if pd.notna(candidate_data.get("email", None)):
+                links.append(f"📧 [{candidate_data.get('email')}]({ 'mailto:' + str(candidate_data.get('email')) })")
+            if pd.notna(candidate_data.get("linkedin", None)):
+                links.append(f"🔗 [LinkedIn]({candidate_data.get('linkedin')})")
+            if links:
+                st.write(" | ".join(links))
 
         with col3:
             prob = float(candidate_data.get("probabilidade_match", 0.0))
             st.metric(label="Match", value=f"{prob:.1%}", delta=f"Rank #{rank}" if rank <= 3 else None)
 
+        # Skills: extrai da vaga e destaca as que aparecem no CV
+        vaga_text = str(vaga_row.get(VAGA_TEXT_COL, vaga_row.get("titulo_vaga", "")))
+        target_skills = extract_skills(vaga_text)
+        cv_text_norm = _norm(str(candidate_data.get(CV_TEXT_COL, "")))
+        skills_hit = [s for s in target_skills if s in cv_text_norm]
+
+        st.markdown("**Skills que batem com a vaga:**", help="Detectadas no texto da vaga e encontradas no CV")
+        st.markdown(render_badges(skills_hit), unsafe_allow_html=True)
+
+        # Explicabilidade: frases mais relevantes do CV para a vaga
+        with st.expander("🔎 Por que este candidato apareceu aqui? (trechos mais relevantes do CV)"):
+            highlights = top_relevant_sentences(
+                candidate_data.get(CANDIDATO_ID_COL, f"cand_{rank}"),
+                vaga_row.get(VAGA_ID_COL, "vaga"),
+                str(candidate_data.get(CV_TEXT_COL, "")),
+                vaga_embedding,
+                encoder,
+                k=3
+            )
+            if highlights:
+                for h in highlights:
+                    st.write(f"• {h}")
+            else:
+                st.caption("Não foi possível extrair trechos relevantes.")
+
+        # CV resumido
         with st.expander("📄 Ver CV Resumido"):
             cv_text = str(candidate_data.get(CV_TEXT_COL, ""))
-            preview = cv_text[:300] + "..." if len(cv_text) > 300 else cv_text
+            preview = cv_text[:1200] + ("..." if len(cv_text) > 1200 else "")
             st.text(preview)
 
 def display_load_logs(log_messages: List[str]) -> bool:
@@ -665,7 +788,8 @@ def main():
         st.write(f"Mostrando {start + 1}–{end} de {len(results_df)}")
 
         for _, candidate in results_df.iloc[start:end].iterrows():
-            display_candidate_card(candidate, int(candidate["rank"]))
+            display_candidate_card(candidate, int(candidate["rank"]), vaga_row, selected_vaga_emb, encoder)
+
 
         # Exportações
         st.markdown("---")

@@ -23,6 +23,7 @@ O dashboard está publicado e pode ser acessado em:
 👉 https://recrutai.streamlit.app/
 
 Os arquivos mais pesados (modelos e dados limpos) foram colocados na AWS S3 para facilitar o deploy e garantir a performance, com o Streamlit consumindo diretamente da nuvem.
+<img width="1596" height="548" alt="image" src="https://github.com/user-attachments/assets/e4cab819-6c3c-4688-8d93-f6954fe34f7a" />
 
 📂 Estrutura do Repositório
 Aqui está a estrutura de pastas do projeto, garantindo o alinhamento correto com o bloco de código:

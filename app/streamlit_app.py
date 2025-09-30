@@ -9,7 +9,7 @@ import json
 import shutil
 import tempfile
 import logging
-import html  # <--- 🟢 ADICIONE ESTA LINHA AQUI
+import html
 from datetime import datetime
 from typing import Any, List, Tuple, Optional
 
@@ -64,7 +64,7 @@ CANDIDATO_ID_COL = "id"
 # Coluna para o texto combinado da vaga
 VAGA_TEXT_COL = "vaga_text"
 
-# 🟢 NOVO: Colunas de metadados dos candidatos para exibição na UI
+# NOVO: Colunas de metadados dos candidatos para exibição na UI
 CANDIDATO_METADATA_COLS = [
     "status",
     "nivel_hierarquico",
@@ -95,6 +95,17 @@ DEFAULT_SKILLS = [
 
 def _norm(text: str) -> str:
     return (text or "").lower()
+
+def _decode_text(text: str) -> str:
+    """Tenta corrigir a codificação de texto lido erroneamente (ex: latin-1 lendo utf-8)."""
+    if not isinstance(text, str):
+        return ""
+    try:
+        # Tenta decodificar o texto que parece ser "latin-1 que deveria ser utf-8"
+        return text.encode('latin-1').decode('utf-8', 'ignore')
+    except:
+        # Se falhar, retorna o texto original
+        return text
 
 def extract_skills(vaga_text: str, extra_skills: Optional[List[str]] = None) -> List[str]:
     """Extrai uma lista de skills-alvo a partir do texto da vaga (set simples)."""
@@ -142,7 +153,6 @@ def top_relevant_sentences(
 
 def render_badges(items: list) -> str:
     """Renders a list of items as a series of stylized HTML badges."""
-    # Note: Ensure the 'html' module is imported (Step 1)
     return " ".join([f"<span style='display:inline-block;padding:2px 8px;border-radius:999px;background:#1f6feb20;border:1px solid #1f6feb55;margin:2px 6px 2px 0;font-size:12px'>{html.escape(i)}</span>" for i in items[:12]])
 # --- 🎯 INJEÇÃO DE SECRETS DO STREAMLIT CLOUD ---
 if "aws" in st.secrets:
@@ -258,7 +268,7 @@ def load_encoder(model_name: str = "all-MiniLM-L6-v2") -> SentenceTransformer:
 def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFrame, List[str]]:
     """
     Carrega os DataFrames de candidatos e vagas do S3.
-    CORREÇÃO: Inclui colunas de metadados dos candidatos e garante a preservação delas.
+    Inclui colunas de metadados dos candidatos e garante a preservação delas.
     """
     log_messages: List[str] = []
     cdf = pd.DataFrame()
@@ -277,12 +287,12 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
             cdf = pd.read_csv(
                 f,
                 nrows=_max_rows,
-                encoding="latin-1",
+                encoding="latin-1", # Mantido latin-1 pois é a sua configuração
                 engine="python",
                 on_bad_lines="skip",
             )
 
-        # 🟢 AJUSTE: Incluir metadados nas colunas obrigatórias
+        # AJUSTE: Incluir metadados nas colunas obrigatórias
         required_candidato_cols = [CANDIDATO_ID_COL, CV_TEXT_COL] + CANDIDATO_METADATA_COLS
         
         # 1. Checagem de colunas CRÍTICAS (ID e CV)
@@ -295,6 +305,9 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
         cdf = cdf.dropna(subset=critical_cols)
         cdf[CV_TEXT_COL] = cdf[CV_TEXT_COL].astype(str)
         
+        # 🟢 CORREÇÃO: Aplicar decodificação para tentar resolver problemas de acentuação
+        cdf[CV_TEXT_COL] = cdf[CV_TEXT_COL].apply(_decode_text)
+
         # 3. Preservar APENAS as colunas que existem no CSV e que são necessárias (ID, CV, Metadados)
         cols_to_keep = [col for col in required_candidato_cols if col in cdf.columns]
         cdf = cdf[cols_to_keep] 
@@ -334,6 +347,11 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
             "habilidades_comportamentais",
         ]
         existing_text_cols = [col for col in text_cols_to_combine if col in vdf.columns]
+        
+        # 🟢 CORREÇÃO: Aplicar decodificação nas colunas de texto da vaga antes de combinar
+        for col in existing_text_cols:
+            vdf[col] = vdf[col].apply(_decode_text)
+
         if existing_text_cols:
             vdf[VAGA_TEXT_COL] = vdf[existing_text_cols].fillna("").astype(str).agg(" ".join, axis=1)
         else:
@@ -374,6 +392,7 @@ def get_or_create_embeddings(
     - gravação/ leitura em S3
     """
     if df.empty:
+        # Assumindo dimensão 384 para o all-MiniLM-L6-v2
         return np.zeros((0, 384), dtype="float32")
 
     content_hash = _hash_df(df, [text_col], sample_rows=20000)
@@ -480,7 +499,7 @@ def predict_match_and_rank(
     # Concatenação Simples (768 features)
     X_predict_768 = np.hstack([X_left, X_right]).astype(np.float32, copy=False)
 
-    # 🟢 CORREÇÃO CRÍTICA: Duplicar as features para 1536 (768 + 768)
+    # CORREÇÃO CRÍTICA: Duplicar as features para 1536 (768 + 768)
     X_predict = np.hstack([X_predict_768, X_predict_768]).astype(np.float32, copy=False)
     
     # 3. Predição compatível com Booster OU sklearn
@@ -626,11 +645,10 @@ def main():
     st.title("🎯 RECRUT.AI - Sistema de Match de Talentos")
     st.markdown(
         """
-    **Tecnologias:**  
-    - 🤖 **Sentence Transformers (SBERT)** para embeddings de texto  
-    - 🌳 **XGBoost** para classificação de matching  
-    - ☁️ **AWS S3** para armazenamento e cache  
-    - ⚡ Otimizações de cache e performance  
+    **Tecnologias:** - 🤖 **Sentence Transformers (SBERT)** para embeddings de texto  
+    - 🌳 **XGBoost** para classificação de matching  
+    - ☁️ **AWS S3** para armazenamento e cache  
+    - ⚡ Otimizações de cache e performance  
     """
     )
 
@@ -787,54 +805,7 @@ def main():
         st.write(f"Mostrando {start + 1}–{end} de {len(results_df)}")
 
         for _, candidate in results_df.iloc[start:end].iterrows():
-            display_candidate_card(candidate, int(candidate["rank"]), vaga_row, selected_vaga_emb, encoder)
+            display_candidate_card(candidate, candidate['rank'], vaga_row, selected_vaga_emb, encoder)
 
-
-        # Exportações
-        st.markdown("---")
-        st.subheader("📊 Exportar Resultados")
-
-        colx1, colx2, colx3 = st.columns(3)
-
-        # Top página atual (CSV)
-        download_page_csv = results_df.iloc[start:end].to_csv(index=False, encoding="utf-8").encode("utf-8")
-        with colx1:
-            st.download_button(
-                label=f"📥 Baixar Página {page} (CSV)",
-                data=download_page_csv,
-                file_name=f"resultados_pagina_{page}_vaga_{selected_vaga_id}_{datetime.now():%Y%m%d_%H%M}.csv",
-                mime="text/csv",
-            )
-
-        # Ranking completo (CSV)
-        download_full_csv = results_df.to_csv(index=False, encoding="utf-8").encode("utf-8")
-        with colx2:
-            st.download_button(
-                label="📥 Baixar Ranking Completo (CSV)",
-                data=download_full_csv,
-                file_name=f"ranking_completo_vaga_{selected_vaga_id}_{datetime.now():%Y%m%d_%H%M}.csv",
-                mime="text/csv",
-            )
-
-        # Ranking completo (Parquet)
-        try:
-            buf = io.BytesIO()
-            results_df.to_parquet(buf, index=False)
-            with colx3:
-                st.download_button(
-                    label="📥 Baixar Ranking Completo (Parquet)",
-                    data=buf.getvalue(),
-                    file_name=f"ranking_completo_vaga_{selected_vaga_id}_{datetime.now():%Y%m%d_%H%M}.parquet",
-                    mime="application/octet-stream",
-                )
-        except Exception as e:
-            logger.warning(f"Parquet indisponível: {e}")
-
-# ==============================================================================
-# 7. EXECUÇÃO DO APLICATIVO
-# ==============================================================================
-
-if __name__ == "__main__":
-    if "embeddings_cache" not in st.session_state:
-        st.session_state.embeddings_cache = {}
+if __name__ == '__main__':
     main()

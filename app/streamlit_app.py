@@ -273,18 +273,18 @@ def load_encoder(model_name: str = "all-MiniLM-L6-v2") -> SentenceTransformer:
 
 @st.cache_data(show_spinner="Carregando dados dos candidatos e vagas do S3...", ttl=900)
 def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFrame, List[str]]:
-    """Carrega os DataFrames de candidatos e vagas do S3. LIMITA as linhas se _max_rows for setado."""
+    """Carrega os DataFrames de candidatos e vagas do S3. LIMITA as linhas APENAS se _max_rows for setado (SÓ PARA CANDIDATOS)."""
     log_messages: List[str] = []
     cdf = pd.DataFrame()
     vdf = pd.DataFrame()
 
-    # --- Candidatos ---
+    # --- Candidatos (Aplicar limite de linhas aqui) ---
     try:
         fs = get_s3_fs()
         candidatos_s3_path = f"{S3_BUCKET}/data/{CANDIDATOS_FILE}"
         
         with fs.open(candidatos_s3_path, "rb") as f:
-            # Usa nrows aqui para otimizar a carga inicial no Streamlit Cloud
+            # APLICAÇÃO DO LIMITE: nrows = _max_rows (que é MAX_ROWS_INITIAL_LOAD ou None)
             cdf = pd.read_csv(f, nrows=_max_rows, encoding="latin-1", engine="python", on_bad_lines="skip")
 
         critical_cols = [CANDIDATO_ID_COL, CV_TEXT_COL]
@@ -300,12 +300,13 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
         log_messages.append(f"❌ Erro ao carregar candidatos: {str(e)}")
         cdf = pd.DataFrame()
 
-    # --- Vagas ---
+    # --- Vagas (NUNCA APLICAR LIMITE aqui para garantir que todas as vagas sejam sempre carregadas) ---
     try:
         fs = get_s3_fs()
         vagas_s3_path = f"{S3_BUCKET}/data/{VAGAS_FILE}"
 
         with fs.open(vagas_s3_path, "rb") as f:
+            # REMOÇÃO DO LIMITE: nrows não é usado aqui, carregando todas as vagas
             vdf = pd.read_csv(f, encoding="latin-1")
 
         text_cols_to_combine = ["titulo_vaga", "objetivo_vaga", "nivel_profissional", "principais_atividades", "competencias", "habilidades_comportamentais"]

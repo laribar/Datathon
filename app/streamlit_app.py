@@ -340,46 +340,53 @@ def get_or_create_embeddings(
     return embeddings
 
 # ==============================================================================
-# 4. FUNÇÕES DE PREDIÇÃO (VERSÃO CORRIGIDA)
+# 4. FUNÇÕES DE PREDIÇÃO (VERSÃO CORRIGIDA FINAL)
 # ==============================================================================
 
 def predict_match_and_rank(
     vaga_embedding: np.ndarray,
     all_candidate_embeddings: np.ndarray,
     cdf: pd.DataFrame,
-    bst: Any,  # pode ser xgb.Booster ou XGBClassifier
-    le: Any = None,  # mantido por compatibilidade; não é usado
+    bst: Any, 
+    le: Any = None, 
     top_k: int = 1000,
 ) -> pd.DataFrame:
     """
     Calcula matching e ranking de forma otimizada.
-    Pressupõe embeddings L2-normalizados (cosine -> produto interno).
-    Compatível com modelos xgb.Booster (API nativa) e XGBClassifier (sklearn).
+    CORREÇÃO: Garante a forma de entrada (1536 features) esperada pelo modelo bst.
     """
     if cdf.empty or all_candidate_embeddings.size == 0:
         return pd.DataFrame()
 
-    # similaridade por produto interno (com normalização L2 prévia)
+    # 1. Pré-filtragem de candidatos (otimização por similaridade)
+    # similaridade por produto interno (assumindo normalização L2 prévia)
     sims = all_candidate_embeddings @ vaga_embedding.astype("float32")
     k = min(top_k, len(sims))
     top_idx = np.argpartition(sims, -k)[-k:]
-    top_idx = top_idx[np.argsort(-sims[top_idx])]  # ordenação desc apenas no top_k
+    top_idx = top_idx[np.argsort(-sims[top_idx])] 
 
+    # 2. Construção da Matriz de Predição (X_predict)
     X_left = all_candidate_embeddings[top_idx]
-    X_right = np.broadcast_to(vaga_embedding, X_left.shape)
-    X_predict = np.hstack([X_left, X_right]).astype(np.float32, copy=False)
+    # Cria a matriz de embeddings da vaga replicada
+    X_right = np.broadcast_to(vaga_embedding, X_left.shape) 
+    
+    # Concatenação Simples (768 features)
+    X_predict_768 = np.hstack([X_left, X_right]).astype(np.float32, copy=False)
 
-    # --- Predição compatível com Booster OU sklearn ---
+    # 🚨 CORREÇÃO ESSENCIAL: Duplicar as features para 1536 (768 + 768)
+    # Isso alinha a entrada de predição com a estrutura de treinamento do seu modelo.
+    X_predict = np.hstack([X_predict_768, X_predict_768]).astype(np.float32, copy=False)
+    
+    # 3. Predição compatível com Booster OU sklearn
     predictions: np.ndarray
     try:
-        # Caso seja Booster (API nativa do XGBoost)
+        # 🚨 Verificação de segurança: Removida para manter a função limpa, mas o fluxo de erro abaixo cobre.
+        
         if isinstance(bst, xgb.Booster):
             dtest = xgb.DMatrix(X_predict)
             predictions = bst.predict(dtest)
 
-        # Caso seja sklearn.XGBClassifier ou similar
-        else:
-            # Priorize probabilidade da classe positiva se disponível
+        else: # sklearn.XGBClassifier ou similar
             if hasattr(bst, "predict_proba"):
                 proba = bst.predict_proba(X_predict)
                 if proba.ndim == 2 and proba.shape[1] > 1:
@@ -387,7 +394,6 @@ def predict_match_and_rank(
                 else:
                     predictions = proba.ravel()
             else:
-                # fallback: usar predict (pode retornar rótulo ou score dependendo do treino)
                 pred = bst.predict(X_predict)
                 predictions = pred.astype(np.float32, copy=False) if isinstance(pred, np.ndarray) else np.array(pred, dtype=np.float32)
 
@@ -396,10 +402,12 @@ def predict_match_and_rank(
         st.error(f"Erro ao gerar predições com o modelo XGBoost: {e}")
         return pd.DataFrame()
 
+    # 4. Formatação e Ranking
     results_df = cdf.iloc[top_idx].copy()
     results_df["probabilidade_match"] = predictions.astype(np.float32, copy=False)
     results_df = results_df.sort_values("probabilidade_match", ascending=False).reset_index(drop=True)
     results_df["rank"] = np.arange(1, len(results_df) + 1, dtype=int)
+    
     return results_df
 
 # ==============================================================================

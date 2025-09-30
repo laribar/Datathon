@@ -1,227 +1,90 @@
-🚀 Projeto Datathon — AI Recruitment
-Plataforma de otimização de recrutamento e seleção com Deep Learning e NLP semântico (SBERT) para realizar match inteligente entre currículos e vagas.
+🚀 Datathon — RECRUT.AI
 
 📌 Visão Geral
-Este projeto busca reduzir o tempo gasto pelo RH em triagens manuais, aplicando modelos de similaridade semântica e classificação de compatibilidade entre candidatos e vagas.
+Este projeto desenvolve uma Plataforma de Otimização de Recrutamento e Seleção que utiliza Deep Learning e Processamento de Linguagem Natural (NLP) semântico para realizar o match inteligente entre currículos (CVs) e vagas.
 
-A solução combina:
+O objetivo principal é reduzir o tempo gasto pelo RH em triagens manuais, aplicando modelos avançados de similaridade semântica para ranqueamento e um classificador robusto para predição de compatibilidade.
 
-Processamento e limpeza de dados de CVs/vagas.
-Embeddings semânticos com Sentence Transformers.
-Classificação com XGBoost.
-API em FastAPI e dashboard em Streamlit.
-Deploy em Render para uso em produção.
-PARA ACESSAR O APP: (https://recrutai.streamlit.app/)
-Os arquivos mais pesados foram colocados na AWS S3 para facilitar o Deploy via stramlit image
+✨ Pilares da Solução
+Embeddings Semânticos: Uso de Sentence Transformers (SBERT) para codificar o significado de CVs e vagas.
 
-📂 Estrutura de Pastas
+Classificação Avançada: Utilização do XGBoost para prever a probabilidade de match (compatibilidade).
+
+Interface de Usuário: Dashboard interativo construído com Streamlit.
+
+API Escalável: Rotas de predição implementadas com FastAPI.
+
+Infraestrutura Cloud: Deploy via Render e armazenamento de modelos e dados grandes na AWS S3.
+
+🔗 Acesso ao Aplicativo
+O dashboard está publicado e pode ser acessado em:
+
+👉 https://recrutai.streamlit.app/
+
+Os arquivos mais pesados (modelos e dados limpos) foram colocados na AWS S3 para facilitar o deploy e garantir a performance, com o Streamlit consumindo diretamente da nuvem.
+<img width="1596" height="548" alt="image" src="https://github.com/user-attachments/assets/e4cab819-6c3c-4688-8d93-f6954fe34f7a" />
+
+📂 Estrutura do Repositório
+Aqui está a estrutura de pastas do projeto, garantindo o alinhamento correto com o bloco de código:
+```
 DATATHON/
 │
-├── app/                         # Backend da aplicação
-│   ├── main.py                   # API principal (FastAPI)
-│   ├── requirements.txt          # Dependências
-│   └── streamlit_app.py          # Dashboard em Streamlit
+├── app/                        # Backend da Aplicação
+│   ├── main.py                  # API REST (FastAPI)
+│   ├── requirements.txt        # Dependências
+│   └── streamlit_app.py        # Dashboard Interativo (Streamlit)
 │
-├── data/                        # Bases de dados
-│   └── processed/                # Dados tratados
-│       ├── applicants_clean.csv
-│       ├── prospects_clean.csv
-│       ├── vagas_clean.csv
-│       ├── applicants.json
-│       ├── prospects.json
-│       └── vagas.json
+├── data/                       # Bases de dados
+│   └── processed/              # Dados tratados
+│       ├── applicants_clean.csv
+│       └── vagas_clean.csv
 │
-├── models/                      # Modelos treinados
-│   ├── sbert_encoder/            # Encoder SBERT
-│   └── modelo_match_xgboost.pkl  # Modelo XGBoost final
+├── models/                     # Modelos Treinados
+│   ├── sbert_encoder/          # Sentence Transformer (SBERT)
+│   └── modelo_match_xgboost.pkl # Modelo XGBoost final
 │
-├── notebooks/                   # Notebooks de exploração
-│   ├── Datathon.ipynb    #notebook que faz pré processamnento / feature engineering / treinamento /validação
-│   
+├── notebooks/                  # Análise e Treinamento
+│   └── Datathon.ipynb          # Notebook que faz pré-processamento, FE e treinamento.
 │
-├── utils/                       # Scripts auxiliares
-│   ├── json_to_csv_prospects.py
-│   ├── json_to_csv_vagas.py
-│   ├── map_files.py
-│   ├── transformar.py
-│   └── treinamento_modelo_match.py
+├── utils/                      # Scripts Auxiliares (Limpeza e Conversão)
 │
-├── .env                         # Variáveis de ambiente
-├── render.yaml                   # Configuração Render
-├── runtime.txt                   # Versão do Python
-└── README.md                     # Documentação
+├── .env                        # Variáveis de ambiente
+├── render.yaml                  # Configuração de Deploy (Render)
+└── runtime.txt                  # Versão do Python utilizada
+```
 
 
----
+⚙️ Fluxo de Trabalho (Pipeline ML)
+Etapa	Ferramentas	Descrição
+1. Coleta/Processamento	Pandas, utils/	Conversão de JSON para CSVs limpos (applicants_clean.csv, vagas_clean.csv) e padronização.
+2. Modelagem Semântica	SBERT, notebooks/	Geração de embeddings (vetores numéricos) dos CVs e Vagas.
+3. Treinamento	XGBoost, Scikit-learn	Treinamento do classificador de Match usando os embeddings como features.
+4. Deploy e Serviço	Streamlit, FastAPI, AWS S3	O Streamlit serve o dashboard, o FastAPI provê a API, e ambos carregam os modelos do S3.
 
-## ⚙️ Fluxo do Projeto
-🚀 Projeto Datathon — AI Recruitment
-Plataforma de otimização de recrutamento e seleção com Deep Learning e NLP semântico (SBERT) para realizar match inteligente entre currículos e vagas.
+Exportar para Sheets
+💻 Como Executar o Projeto Localmente
+1. Pré-requisitos e Credenciais AWS
+Para carregar os dados e modelos, você precisará configurar suas credenciais AWS, pois o aplicativo busca artefatos do bucket S3.
 
-📌 Visão Geral
-Este projeto busca reduzir o tempo gasto pelo RH em triagens manuais, aplicando modelos de similaridade semântica e classificação de compatibilidade entre candidatos e vagas.
+Crie um arquivo .env (ou configure suas variáveis de ambiente) na raiz do projeto:
 
-A solução combina:
+AWS_ACCESS_KEY_ID=sua_chave_id
+AWS_SECRET_ACCESS_KEY=sua_chave_secreta
+AWS_REGION=us-east-1 # (ou a região do seu bucket)
+2. Setup do Ambiente
+Clone o repositório e crie um ambiente virtual:
 
-Processamento e limpeza de dados de CVs/vagas.
-Embeddings semânticos com Sentence Transformers.
-Classificação com XGBoost.
-API em FastAPI e dashboard em Streamlit.
-Deploy em Render para uso em produção.
-PARA ACESSAR O APP: (https://recrutai.streamlit.app/)
-Os arquivos mais pesados foram colocados na AWS S3 para facilitar o Deploy via stramlit image
+Bash
 
-📂 Estrutura de Pastas
-DATATHON/
-│
-├── app/                         # Backend da aplicação
-│   ├── main.py                   # API principal (FastAPI)
-│   ├── requirements.txt          # Dependências
-│   └── streamlit_app.py          # Dashboard em Streamlit
-│
-├── data/                        # Bases de dados
-│   └── processed/                # Dados tratados
-│       ├── applicants_clean.csv
-│       ├── prospects_clean.csv
-│       ├── vagas_clean.csv
-│       ├── applicants.json
-│       ├── prospects.json
-│       └── vagas.json
-│
-├── models/                      # Modelos treinados
-│   ├── sbert_encoder/            # Encoder SBERT
-│   └── modelo_match_xgboost.pkl  # Modelo XGBoost final
-│
-├── notebooks/                   # Notebooks de exploração
-│   ├── Datathon.ipynb    #notebook que faz pré processamnento / feature engineering / treinamento /validação
-│   
-│
-├── utils/                       # Scripts auxiliares
-│   ├── json_to_csv_prospects.py
-│   ├── json_to_csv_vagas.py
-│   ├── map_files.py
-│   ├── transformar.py
-│   └── treinamento_modelo_match.py
-│
-├── .env                         # Variáveis de ambiente
-├── render.yaml                   # Configuração Render
-├── runtime.txt                   # Versão do Python
-└── README.md                     # Documentação
-
-
----
-
-## ⚙️ Fluxo do Projeto
-
-1. **📥 Coleta de Dados**  
-   - `applicants.json` → currículos  
-   - `prospects.json` → candidatos prospectados  
-   - `vagas.json` → descrições de vagas  
-
-2. **🧹 Processamento**  
-   - Conversão JSON → CSV (`json_to_csv_*`).  
-   - Limpeza e padronização de texto (`transformar.py`).  
-
-3. **🧠 Modelagem**  
-   - **SBERT Encoder** → embeddings de CVs e vagas.  
-   - **XGBoost** → classificador de compatibilidade.  
-   - Treinamento automatizado (`Datathon.ipynb`).  
-
-4. **🖥️ Interface**  
-   - **Streamlit (`streamlit_app.py`)** → upload de CVs/vagas, visualização de matches.  
-   - **FastAPI (`main.py`)** → rotas `/match` e `/batch_match`.  
-
-5. **☁️ Deploy**  
-   - Configurado no **Render** via `render.yaml` e `runtime.txt`.  
-
----
-
-## 📊 Tecnologias
-
-- **Python 3.10+**
-- **FastAPI** (API REST)
-- **Streamlit** (Dashboard)
-- **Sentence Transformers (SBERT)**
-- **XGBoost**
-- **Pandas / NumPy**
-- **Scikit-learn**
-- **Render**
-
----
-
-## 🚀 Como Executar
-
-### 1. Clonar o repositório
-```bash
+````# 1. Clonar o repositório
 git clone https://github.com/laribar/datathon.git
 cd datathon
 
-2. Criar ambiente virtual
+# 2. Criar ambiente virtual
 python -m venv .venv
-source .venv/bin/activate   # Linux/Mac
-.venv\Scripts\activate      # Windows
+source .venv/bin/activate    # Linux/Mac
+.venv\Scripts\activate       # Windows
 
-3. Instalar dependências
+# 3. Instalar dependências
 pip install -r app/requirements.txt
-
-4. Rodar API FastAPI
-uvicorn app.main:app --reload --port 8000
-
-5. Rodar Dashboard Streamlit
-streamlit run app/streamlit_app.py
-1. **📥 Coleta de Dados**  
-   - `applicants.json` → currículos  
-   - `prospects.json` → candidatos prospectados  
-   - `vagas.json` → descrições de vagas  
-
-2. **🧹 Processamento**  
-   - Conversão JSON → CSV (`json_to_csv_*`).  
-   - Limpeza e padronização de texto (`transformar.py`).  
-
-3. **🧠 Modelagem**  
-   - **SBERT Encoder** → embeddings de CVs e vagas.  
-   - **XGBoost** → classificador de compatibilidade.  
-   - Treinamento automatizado (`Datathon.ipynb`).  
-
-4. **🖥️ Interface**  
-   - **Streamlit (`streamlit_app.py`)** → upload de CVs/vagas, visualização de matches.  
-   - **FastAPI (`main.py`)** → rotas `/match` e `/batch_match`.  
-
-5. **☁️ Deploy**  
-   - Configurado no **Render** via `render.yaml` e `runtime.txt`.  
-
----
-
-## 📊 Tecnologias
-
-- **Python 3.10+**
-- **FastAPI** (API REST)
-- **Streamlit** (Dashboard)
-- **Sentence Transformers (SBERT)**
-- **XGBoost**
-- **Pandas / NumPy**
-- **Scikit-learn**
-- **Render**
-
----
-
-## 🚀 Como Executar
-
-### 1. Clonar o repositório
-```bash
-git clone https://github.com/laribar/datathon.git
-cd datathon
-
-2. Criar ambiente virtual
-python -m venv .venv
-source .venv/bin/activate   # Linux/Mac
-.venv\Scripts\activate      # Windows
-
-3. Instalar dependências
-pip install -r app/requirements.txt
-
-4. Rodar API FastAPI
-uvicorn app.main:app --reload --port 8000
-
-5. Rodar Dashboard Streamlit
-streamlit run app/streamlit_app.py
+````

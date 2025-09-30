@@ -82,11 +82,10 @@ CANDIDATO_METADATA_COLS = [
     "remuneracao",
     "local",
     "email_pessoal",
+    "genero" # Adicionado para garantir que esteja na lista
 ]
 
 # NOVO: Limite de linhas a carregar na inicialização para evitar timeouts no Streamlit Cloud
-# O valor None carrega tudo (usado na sidebar de Admin)
-# Para a inicialização do app, um valor menor garante estabilidade
 MAX_ROWS_INITIAL_LOAD = 10000 
 # ---------------------------------------------
 # 🔎 Helpers de explicabilidade
@@ -109,6 +108,7 @@ def _decode_text(text: str) -> str:
         return ""
     try:
         # A codificação mais comum de erro em CSV brasileiro é latin-1 lendo utf-8
+        # Esta linha assume que o texto foi lido como latin-1 mas é utf-8.
         return text.encode('latin-1').decode('utf-8', 'ignore')
     except:
         return text
@@ -124,7 +124,9 @@ def split_sentences(text: str) -> List[str]:
     """Split simples e robusto (sem novas deps) para sentenças do CV."""
     if not isinstance(text, str) or not text.strip():
         return []
+    # Divide por ponto, exclamação, interrogação seguidos de espaço ou por quebra de linha
     parts = re.split(r'(?<=[\.\!\?])\s+|\n+', text.strip())
+    # Filtra partes muito curtas para evitar ruído
     return [p.strip() for p in parts if len(p.strip()) > 20][:60]
 
 @st.cache_data(hash_funcs={SentenceTransformer: lambda _: None}, show_spinner=False)
@@ -145,10 +147,12 @@ def top_relevant_sentences(
     sent_emb = encoder.encode(sents, show_progress_bar=False, convert_to_numpy=True, batch_size=32).astype("float32")
     sent_emb = _l2_normalize(sent_emb)
     
-    # A vaga_embedding já deve ser float32 (garantido no predict_match_and_rank)
+    # Produto escalar entre a matriz de sentenças e o vetor da vaga
     scores = (sent_emb @ vaga_embedding).reshape(-1)
     k = min(k, len(sents))
+    # Encontra os índices dos top K scores
     top_idx = np.argpartition(scores, -k)[-k:]
+    # Ordena os top K em ordem decrescente
     top_idx = top_idx[np.argsort(-scores[top_idx])]
     return [sents[i] for i in top_idx]
 
@@ -181,6 +185,7 @@ def _hash_df(df: pd.DataFrame, cols: List[str], sample_rows: int = 0) -> str:
     if not set(cols).issubset(df.columns):
         return f"missing_cols_{hash(tuple(cols))}"
     if sample_rows and len(df) > sample_rows:
+        # Usa uma amostra para evitar hash demorado em 42k+ rows, mas garante que o hash mude se a amostra mudar
         df = df.sample(sample_rows, random_state=42)
     # Aumenta a robustez do hash forçando a conversão para string antes do hash
     s = pd.util.hash_pandas_object(df[cols].astype(str).fillna(""), index=False).values
@@ -188,6 +193,7 @@ def _hash_df(df: pd.DataFrame, cols: List[str], sample_rows: int = 0) -> str:
     return str(int(s[: min(2000, len(s))].sum())) if len(s) else "empty"
 
 def _l2_normalize(M: np.ndarray) -> np.ndarray:
+    """Normalização L2 (unitária) de cada vetor na matriz."""
     n = np.linalg.norm(M, axis=1, keepdims=True) + 1e-12
     return M / n
 
@@ -231,13 +237,12 @@ def load_encoder(model_name: str = "all-MiniLM-L6-v2") -> SentenceTransformer:
         sbert_s3_path = f"{S3_BUCKET}/{SBERT_MODEL_DIR}"
         test_file_path = f"{sbert_s3_path}/config.json"
         
-        # O SBERT salva o modelo baixado em um cache local. Usaremos um diretório temporário para
-        # simular essa persistência, mas com um nome estável se o download for necessário.
+        # O SBERT salva o modelo baixado em um cache local. Usaremos um diretório temporário
         local_cache_path = os.path.join(tempfile.gettempdir(), SBERT_MODEL_DIR)
 
         if fs.exists(test_file_path):
             # Modelo no S3, baixar para temp dir e carregar
-            if not os.path.exists(local_cache_path): # Tenta evitar download se o cache local Streamlit persistir
+            if not os.path.exists(local_cache_path): 
                 logger.info("Modelo SBERT encontrado em S3. Baixando para cache local...")
                 fs.get(sbert_s3_path, local_cache_path, recursive=True)
             
@@ -342,7 +347,8 @@ def get_or_create_embeddings(
         return np.zeros((0, encoder.get_sentence_embedding_dimension()), dtype="float32")
 
     content_hash = _hash_df(df, [text_col], sample_rows=20000)
-    cache_key = f"emb_{filename}_{content_hash}"
+    # A cache key agora inclui o hash, o que garante a invalidação
+    cache_key = f"emb_{filename}_{content_hash}" 
 
     # 1. Tentar cache de sessão/memória do Streamlit
     if _use_cache and cache_key in st.session_state:
@@ -387,7 +393,7 @@ def get_or_create_embeddings(
             all_embeddings.append(batch_embeddings)
 
             # Atualização da barra (mais rara para reduzir overhead de rede)
-            if i % (batch_size * 10) == 0: 
+            if i % (batch_size * 10) == 0:  
                 progress = min((i + batch_size) / len(texts), 1.0)
                 progress_bar.progress(progress)
                 status_text.text(f"Processando: {min(i + batch_size, len(texts)):,} / {len(texts):,}")
@@ -397,7 +403,7 @@ def get_or_create_embeddings(
     status_text.empty()
     logger.info(f"✅ Embeddings criados: {filename}")
 
-    # 4. Salvar no S3
+    # 4. Salvar no S3 (Garante consistência para a próxima execução)
     try:
         with st.spinner("💾 Salvando embeddings no S3..."):
             with tempfile.NamedTemporaryFile(delete=False, suffix=".npy") as tmp:
@@ -439,8 +445,10 @@ def predict_match_and_rank(
     # A multiplicação de matrizes é mais rápida com numpy e garante o produto escalar (similaridade)
     sims = cand_emb @ vaga_embedding
     k = min(top_k, n_cand)
+    # Filtra os índices dos top k
     top_idx = np.argpartition(sims, -k)[-k:]
-    top_idx = top_idx[np.argsort(-sims[top_idx])] # Ordena apenas os top k
+    # Ordena os top k
+    top_idx = top_idx[np.argsort(-sims[top_idx])] 
 
     # 2. Construção da Matriz de Predição
     X_left = all_candidate_embeddings[top_idx]
@@ -449,9 +457,10 @@ def predict_match_and_rank(
     
     # Matriz para XGBoost (768 + 768 = 1536 features)
     X_predict = np.hstack([X_left, X_right]).astype(np.float32, copy=False)
-    # Note: O modelo foi treinado com 2 * Dimention (2 * 384 = 768) ou 4 * Dimention (4 * 384 = 1536)?
-    # Mantendo a sua lógica original (que duplicava a matriz de 768 features), para consistência:
-    X_predict = np.hstack([X_predict, X_predict]).astype(np.float32, copy=False) # <- Confirma 1536 features
+    # Assumindo o modelo original usava o embedding de 384 duas vezes (384 + 384 = 768)
+    # E depois concatenava essa matriz consigo mesma (768 + 768 = 1536)
+    # Se o modelo foi treinado com 1536 features, esta linha é crítica:
+    X_predict = np.hstack([X_predict, X_predict]).astype(np.float32, copy=False)
 
     # 3. Predição
     try:
@@ -489,9 +498,9 @@ def save_dataframe_to_s3(df: pd.DataFrame, filename: str, s3_dir: str = S3_DATA_
         fs = get_s3_fs()
         s3_path = f"{s3_dir.rstrip('/')}/{filename}"
 
-        # Usando io.BytesIO com utf-8 e compressão gz é mais robusto e performático
+        # Usando io.StringIO para garantir o formato CSV
         csv_buffer = io.StringIO()
-        df.to_csv(csv_buffer, index=False, encoding='utf-8') # Mudei para utf-8, que é padrão, mas mantive a decodificação no load.
+        df.to_csv(csv_buffer, index=False, encoding='utf-8') 
         
         # Salva o arquivo no S3
         with fs.open(s3_path, 'w', encoding='utf-8') as f:
@@ -518,7 +527,9 @@ def add_new_data_point(
     new_row_series[id_col] = new_id
     
     df_temp = pd.DataFrame(columns=df.columns)
-    df_temp.loc[0] = new_row_series.reindex(df.columns)
+    # Reindexa a nova linha para ter as mesmas colunas que o DF original
+    new_row_final = new_row_series.reindex(df.columns).fillna(pd.NA)
+    df_temp.loc[0] = new_row_final
     
     # Aplica a decodificação e limpeza ao texto
     df_temp[text_col] = df_temp[text_col].apply(_decode_text)
@@ -641,16 +652,6 @@ def display_load_logs(log_messages: List[str]) -> bool:
 # ==============================================================================
 # 7. FUNÇÕES DE PÁGINAS (PAINEL, ADMIN E MATCHING)
 # ==============================================================================
-import streamlit as st
-import pandas as pd
-import numpy as np
-import time
-
-# Assumindo que estas constantes e funções auxiliares (que não estão no prompt, mas são necessárias)
-# CANDIDATO_ID_COL, VAGA_ID_COL, CV_TEXT_COL, VAGA_TEXT_COL, EMBEDDINGS_FILE,
-# load_data, save_dataframe_to_s3, add_new_data_point, display_load_logs,
-# get_or_create_embeddings, predict_match_and_rank, display_candidate_card, _hash_df
-# estão definidas no escopo global ou em outro arquivo importado.
 
 # --- PÁGINA DE ADMIN ---
 def page_admin(cdf: pd.DataFrame, vdf: pd.DataFrame):
@@ -802,7 +803,7 @@ def page_dashboard(cdf: pd.DataFrame, vdf: pd.DataFrame):
         else:
             st.caption("Dados geográficos insuficientes ou não-Brasil.")
 
-# --- PÁGINA DE MATCHING DE VAGAS CRÍTICAS (NOVO COM PAGINAÇÃO) ---
+# --- PÁGINA DE MATCHING DE VAGAS CRÍTICAS (COM PAGINAÇÃO) ---
 def page_critical_match(cdf, vdf, encoder, bst):
     """Filtra vagas críticas e busca o top candidato (foco em potencial) com paginação eficiente."""
     
@@ -854,13 +855,13 @@ def page_critical_match(cdf, vdf, encoder, bst):
     vaga_display_options = list(vaga_map.keys())
     
     # CRÍTICO: Usamos st.session_state para armazenar a vaga selecionada
-    if 'selected_vaga_display' not in st.session_state:
-        st.session_state['selected_vaga_display'] = vaga_display_options[0] if vaga_display_options else None
+    # Usamos uma chave extra para detectar mudança
+    last_selected_vaga_key = st.session_state.get('last_vaga_selector_key_state', vaga_display_options[0] if vaga_display_options else None)
         
     selected_vaga_display = st.selectbox(
         "Selecione uma Vaga",
         vaga_display_options,
-        key="vaga_selector_key" # Garante que o estado seja salvo
+        key="vaga_selector_key" 
     )
     
     if not selected_vaga_display:
@@ -868,7 +869,7 @@ def page_critical_match(cdf, vdf, encoder, bst):
         return
 
     # Se a vaga mudou, reseta a página para 1
-    if st.session_state.vaga_selector_key != st.session_state.get('last_vaga_selector_key_state', selected_vaga_display):
+    if selected_vaga_display != last_selected_vaga_key:
          st.session_state['current_match_page'] = 1
     
     st.session_state['last_vaga_selector_key_state'] = selected_vaga_display # Atualiza o estado da vaga
@@ -908,7 +909,7 @@ def page_critical_match(cdf, vdf, encoder, bst):
             )
 
         # Usamos st.cache_data para cachear o resultado do RANKING e evitar recálculo desnecessário
-        # O hash depende do ID da vaga e do hash dos embeddings dos candidatos
+        # O hash depende do ID da vaga, do hash dos embeddings e do Top K
         @st.cache_data(show_spinner="Rodando match ML e Ranking...", ttl=3600)
         def run_prediction_and_rank(vaga_id, vaga_emb, cdf_hash, c_emb, bst_model, top_k):
             return predict_match_and_rank(
@@ -943,26 +944,32 @@ def page_critical_match(cdf, vdf, encoder, bst):
             
             # --- LÓGICA DE PAGINAÇÃO ---
             col_prev, col_info, col_next = st.columns([1, 2, 1])
+            
+            def set_page(page_num):
+                st.session_state.current_match_page = page_num
 
-            if col_prev.button("⬅️ Anterior", disabled=(st.session_state.current_match_page <= 1)):
-                st.session_state.current_match_page -= 1
-                st.rerun()
+            if col_prev.button("⬅️ Anterior", disabled=(st.session_state.current_match_page <= 1), on_click=set_page, args=(st.session_state.current_match_page - 1,)):
+                pass # Ação é feita no on_click
+            
+            # Adiciona o seletor de página para navegação rápida
+            with col_info:
+                current_page = st.session_state.current_match_page
+                
+                # Exibe a informação da página/total
+                st.markdown(
+                    f"**Exibindo {((current_page - 1) * results_per_page) + 1} a {min(current_page * results_per_page, total_results)}** | **Página {current_page} de {total_pages}**", 
+                    unsafe_allow_html=True, 
+                    help="A navegação é instantânea porque o cálculo já está em cache."
+                )
 
-            if col_next.button("Próxima ➡️", disabled=(st.session_state.current_match_page >= total_pages)):
-                st.session_state.current_match_page += 1
-                st.rerun()
+            if col_next.button("Próxima ➡️", disabled=(st.session_state.current_match_page >= total_pages), on_click=set_page, args=(st.session_state.current_match_page + 1,)):
+                pass # Ação é feita no on_click
                 
             start_index = (st.session_state.current_match_page - 1) * results_per_page
             end_index = start_index + results_per_page
             
             # Fatiamento do DataFrame para exibir APENAS a página atual
             results_to_display = results_df.iloc[start_index:end_index]
-            
-            col_info.markdown(
-                f"**Exibindo {start_index + 1} a {min(end_index, total_results)} (Total: {total_results})** | **Página {st.session_state.current_match_page} de {total_pages}**", 
-                unsafe_allow_html=True, 
-                help="A navegação é instantânea porque o cálculo já foi feito e está em cache."
-            )
             
             st.markdown("---")
             st.subheader(f"Resultado: Top {total_results} Candidatos com Maior Potencial de Match")
@@ -976,58 +983,45 @@ def page_critical_match(cdf, vdf, encoder, bst):
     else:
         st.info("Aguardando carregamento dos dados/embeddings.")
 
-
 # ==============================================================================
-# 8. FUNÇÃO PRINCIPAL DE CONTROLE
+# 8. FUNÇÃO PRINCIPAL DE INICIALIZAÇÃO
 # ==============================================================================
 
 def main():
-    """Função principal que gerencia o fluxo da aplicação."""
+    st.sidebar.image("https://upload.wikimedia.org/wikipedia/commons/thumb/d/d4/Google_Developers_logo.svg/1200px-Google_Developers_logo.svg.png", width=250)
+    st.sidebar.title("RECRUT.AI - Beta")
     
-    # 1. Carregar Modelo de Predição (XGBoost)
+    # 1. Carregar Dados Iniciais (limitados)
     try:
-        bst = load_models()
+        cdf, vdf, log_messages = load_data(_max_rows=MAX_ROWS_INITIAL_LOAD)
+        data_loaded_ok = display_load_logs(log_messages)
     except Exception as e:
-        st.error(f"❌ Não foi possível carregar o modelo XGBoost. Erro: {e}")
-        bst = None
-        
-    # 2. Carregar Encoder SBERT
-    try:
-        encoder = load_encoder()
-    except Exception as e:
-        st.error(f"❌ Não foi possível carregar o SBERT Encoder. Erro: {e}")
-        encoder = None
-        
-    # 3. Carregar Dados Iniciais (limitados para a UI)
-    cdf, vdf, log_messages = load_data(_max_rows=MAX_ROWS_INITIAL_LOAD) 
-    
-    data_loaded_ok = display_load_logs(log_messages)
-
-    # 4. Estrutura de navegação (Sidebar)
-    st.sidebar.title("Navegação")
-    if not data_loaded_ok:
-        st.warning("⚠️ Dados críticos não foram carregados. Apenas a página de Admin pode ser usada.")
-        page_admin(cdf, vdf)
+        st.error(f"❌ Falha crítica ao inicializar a conexão com S3: {e}. Verifique as credenciais AWS.")
         return
 
-    page_selection = st.sidebar.radio(
-        "Ir para:",
-        ["🥇 Match Crítico", "📊 Painel de Dados", "🛠️ Admin (Upload/Insert)"]
-    )
+    if not data_loaded_ok:
+        st.error("Não foi possível carregar os dados essenciais. Verifique a base de dados no S3.")
+        return
 
-    # 5. Chamada das Páginas
-    if page_selection == "🥇 Match Crítico":
-        if bst and encoder:
-             page_critical_match(cdf, vdf, encoder, bst)
-        else:
-            st.error("Aguardando carregamento do modelo XGBoost e SBERT para iniciar o Match.")
-            
-    elif page_selection == "📊 Painel de Dados":
-        page_dashboard(cdf, vdf)
-        
-    elif page_selection == "🛠️ Admin (Upload/Insert)":
-        page_admin(cdf, vdf)
+    # 2. Carregar Modelos
+    try:
+        encoder = load_encoder()
+        bst = load_models()
+    except Exception as e:
+        st.error(f"❌ Falha ao carregar modelos (SBERT ou XGBoost): {e}. Verifique o S3.")
+        return
 
+    # 3. Seleção de Página
+    PAGES = {
+        "🥇 Match de Vagas Críticas": lambda: page_critical_match(cdf, vdf, encoder, bst),
+        "📊 Painel de Estatísticas": lambda: page_dashboard(cdf, vdf),
+        "🛠️ Administração de Dados": lambda: page_admin(cdf, vdf),
+    }
+
+    selection = st.sidebar.radio("Navegação", list(PAGES.keys()))
+    
+    # Execução da página selecionada
+    PAGES[selection]()
 
 if __name__ == "__main__":
     main()

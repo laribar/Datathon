@@ -414,17 +414,35 @@ def predict_match_and_rank(
     bst: Any, 
     top_k: int = 1000,
 ) -> pd.DataFrame:
-    # ... (código omitido)
+    """Calcula matching e ranking de candidatos por probabilidade (Potencial)."""
+    if cdf.empty or all_candidate_embeddings.size == 0:
+        return pd.DataFrame()
+
+    n_cand = min(len(cdf), all_candidate_embeddings.shape[0])
+    cand_emb = all_candidate_embeddings[:n_cand]
+    cdf_safe = cdf.iloc[:n_cand].reset_index(drop=True)
+
+    # Garante que o embedding da vaga é 1D e float32
+    vaga_embedding = vaga_embedding.reshape(-1).astype("float32")
+
+    # 1. Filtrar Top K por Similaridade (Primeira Peneira Rápida)
+    sims = cand_emb @ vaga_embedding
+    k = min(top_k, n_cand)
+    # Filtra os índices dos top k
+    top_idx = np.argpartition(sims, -k)[-k:]
+    # Ordena os top k
+    top_idx = top_idx[np.argsort(-sims[top_idx])] 
 
     # 2. Construção da Matriz de Predição
     X_left = all_candidate_embeddings[top_idx] # (K, 384)
     X_right = np.broadcast_to(vaga_embedding, X_left.shape) # (K, 384)
     
-    # X_predict_base tem 768 features (384 + 384)
+    # Concatena os embeddings do Candidato e da Vaga (Resultado: 768 features)
     X_predict_base = np.hstack([X_left, X_right]).astype(np.float32, copy=False)
-    
-    # 💥 CORREÇÃO: Duplica o vetor de entrada para atingir 1536 features
-    # (768 + 768)
+
+    # 💥 CORREÇÃO PARA O ERRO 'SHAPE MISMATCH':
+    # Duplica o vetor de 768 dimensões para atingir as 1536 features
+    # que o modelo XGBoost espera (768 + 768 = 1536).
     X_predict = np.hstack([X_predict_base, X_predict_base]).astype(np.float32, copy=False)
     
     # 3. Predição

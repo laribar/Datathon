@@ -11,13 +11,14 @@ import os
 import joblib
 import time
 import tempfile 
+import shutil # Importação adicional para limpeza
 from datetime import datetime
+from typing import Dict, Any, List, Tuple, Optional
 import logging
 
 from sentence_transformers import SentenceTransformer
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics.pairwise import cosine_similarity
-from typing import Dict, Any, List, Tuple, Optional
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -40,18 +41,20 @@ S3_BUCKET = "datathon-recrutai"
 S3_DATA_PATH = f"s3://{S3_BUCKET}/data"
 S3_MODEL_PATH = f"s3://{S3_BUCKET}/data/models"
 
+# 🚨 AJUSTE 1: Caminho do SBERT no S3
+SBERT_MODEL_DIR = "sbert_encoder" 
+
 # Nomes dos arquivos
 CANDIDATOS_FILE = "applicants_clean.csv"
 VAGAS_FILE = "vagas_clean.csv"
 EMBEDDINGS_FILE = "candidatos.npy"
 VAGAS_EMBEDDINGS_FILE = "vagas.npy"
 MODEL_FILE = "modelo_match_xgboost.pkl"
-ENCODER_FILE = "encoder_le.pkl"
+ENCODER_FILE = "encoder_le.pkl" 
 
 # Colunas para o embedding e IDs
 CV_TEXT_COL = 'curriculo_pt' 
 VAGA_ID_COL = 'id' 
-# Nome da coluna de ID do candidato, baseado no seu header CSV original.
 CANDIDATO_ID_COL = 'id' 
 
 # Coluna para o texto combinado da vaga (Criada em load_data)
@@ -104,42 +107,34 @@ def get_s3_fs():
         st.stop()
 
 @st.cache_resource(show_spinner="Carregando modelos (SBERT e XGBoost)...")
-def load_models() -> Tuple[Any, LabelEncoder]:
-    """Carrega o modelo XGBoost e o LabelEncoder do S3 com tratamento robusto de erros."""
+def load_models() -> Any: 
+    """Carrega o modelo XGBoost do S3 com tratamento robusto de erros."""
     try:
         fs = get_s3_fs()
         
         with st.spinner("Carregando modelos do S3..."):
             # Caminhos completos no S3
             model_s3_path = f"{S3_BUCKET}/data/models/{MODEL_FILE}"
-            encoder_s3_path = f"{S3_BUCKET}/data/models/{ENCODER_FILE}"
             
-            st.info(f"📁 Buscando modelos em: s3://{model_s3_path}")
+            st.info(f"📁 Buscando modelo em: s3://{model_s3_path}")
             
-            # Verifica se os arquivos existem
+            # Verifica se o arquivo do modelo (essencial) existe
             if not fs.exists(model_s3_path):
-                st.error(f"❌ Arquivo do modelo não encontrado: s3://{model_s3_path}")
-                st.stop()
-            if not fs.exists(encoder_s3_path):
-                st.error(f"❌ Arquivo do encoder não encontrado: s3://{encoder_s3_path}")
+                st.error(f"❌ Arquivo do modelo XGBoost não encontrado: s3://{model_s3_path}. O modelo é ESSENCIAL para o match.")
                 st.stop()
 
-            # Carregamento dos arquivos
+            # Carregamento do arquivo do modelo
             with fs.open(model_s3_path, 'rb') as f:
                 bst = joblib.load(f)
 
-            with fs.open(encoder_s3_path, 'rb') as f:
-                le = joblib.load(f)
-
-            st.toast("✅ Modelos carregados do S3 com sucesso!", icon="✅")
+            # O LabelEncoder (le) foi ignorado para contornar o erro de arquivo ausente.
+            st.toast("✅ Modelo XGBoost carregado do S3 com sucesso! (LabelEncoder opcional foi ignorado)", icon="✅")
         
-        # Validação dos modelos
+        # Validação do modelo
         if bst is None:
             raise ValueError("Modelo XGBoost está vazio")
-        if le is None:
-            raise ValueError("LabelEncoder está vazio")
             
-        return bst, le
+        return bst
         
     except Exception as e:
         st.error(f"❌ Erro crítico ao carregar modelos: {str(e)}")
@@ -148,21 +143,59 @@ def load_models() -> Tuple[Any, LabelEncoder]:
 
 @st.cache_resource(show_spinner="Carregando Sentence Transformer...")
 def load_encoder(model_name: str = 'all-MiniLM-L6-v2') -> SentenceTransformer:
-    """Carrega o modelo SBERT."""
+    """
+    Carrega o modelo SBERT, priorizando o S3 e baixando-o localmente.
+    A pasta do SBERT (sbert_encoder/) deve estar na raiz do bucket.
+    """
+    temp_dir = None
     try:
-        encoder = SentenceTransformer(model_name)
+        fs = get_s3_fs()
+        sbert_s3_path = f"{S3_BUCKET}/{SBERT_MODEL_DIR}"
         
-        # Testa o encoder com um texto pequeno
+        # 1. Criar um diretório temporário para armazenar o modelo
+        temp_dir = tempfile.mkdtemp()
+        local_model_path = os.path.join(temp_dir, SBERT_MODEL_DIR)
+        
+        # 2. Verificar se o modelo SBERT existe no S3
+        # Procuramos por um arquivo chave dentro da pasta SBERT_MODEL_DIR
+        test_file_path = f"{sbert_s3_path}/config.json"
+        
+        if not fs.exists(test_file_path):
+             st.warning(f"⚠️ Modelo SBERT não encontrado em S3 ({sbert_s3_path}). Tentando baixar da internet...")
+             # Fallback para download da internet (o comportamento original, mas agora é fallback)
+             encoder = SentenceTransformer(model_name)
+             st.toast("✅ Encoder carregado da internet.", icon="✅")
+             return encoder
+
+        # 3. Baixar toda a pasta do S3 para o disco local
+        with st.spinner(f"☁️ Baixando modelo SBERT do S3 para cache local..."):
+            # O comando get precisa do caminho completo do S3 para o caminho completo local
+            # O s3fs.get é usado para copiar pastas inteiras recursivamente (rpath, lpath)
+            fs.get(sbert_s3_path, local_model_path, recursive=True)
+        
+        # 4. Carregar o modelo SBERT a partir da pasta local
+        encoder = SentenceTransformer(local_model_path)
+            
+        # 5. Testar o encoder
         test_embedding = encoder.encode(["teste"], convert_to_numpy=True)
         if test_embedding.shape[1] == 0:
             raise ValueError("Embedding de teste vazio")
             
-        st.toast(f"✅ Encoder '{model_name}' carregado com sucesso.", icon="✅")
+        st.toast(f"✅ Encoder SBERT carregado de: {sbert_s3_path}", icon="✅")
         return encoder
         
     except Exception as e:
-        st.error(f"❌ Falha ao carregar encoder: {e}")
+        st.error(f"❌ Falha crítica ao carregar SBERT: {e}")
         st.stop()
+    finally:
+        # 6. Limpar o diretório temporário após o carregamento
+        if temp_dir and os.path.exists(temp_dir):
+            try:
+                # O shutils.rmtree é usado para remover pastas recursivamente
+                shutil.rmtree(temp_dir)
+                logger.info(f"Diretório temporário limpo: {temp_dir}")
+            except Exception as e:
+                logger.error(f"Erro ao limpar diretório temporário: {e}")
 
 
 @st.cache_data(show_spinner="Carregando dados dos candidatos e vagas do S3...")
@@ -184,7 +217,7 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
             raise FileNotFoundError(f"Arquivo não encontrado: s3://{candidatos_s3_path}")
         
         with fs.open(candidatos_s3_path, 'rb') as f:
-            # 🚨 CORREÇÃO FINAL: Usando o engine Python, mais robusto para CSVs mal-formatados ou com aspas complexas.
+            # Usando o engine Python, mais robusto para CSVs mal-formatados ou com aspas complexas.
             cdf = pd.read_csv(
                 f, 
                 nrows=_max_rows, 
@@ -276,8 +309,6 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
     
     return cdf, vdf
 
-# ... O restante do código (get_or_create_embeddings, predict_match_and_rank, display_candidate_card, main) 
-# permanece o mesmo que na resposta anterior.
 @st.cache_data(show_spinner="Gerenciando cache de embeddings...")
 def get_or_create_embeddings(
     df: pd.DataFrame, 
@@ -389,7 +420,7 @@ def predict_match_and_rank(
     all_candidate_embeddings: np.ndarray, 
     cdf: pd.DataFrame, 
     bst: xgb.Booster, 
-    le: LabelEncoder,
+    le: LabelEncoder, # Mantida para compatibilidade, mas não é usada no corpo da função
     top_k: int = 1000
 ) -> pd.DataFrame:
     """
@@ -560,7 +591,9 @@ def main():
     
     # Carregar modelos (SBERT e XGBoost)
     with st.spinner("🚀 Inicializando modelos de IA..."):
-        bst, le = load_models()
+        # Apenas carregamos o bst (Booster). O le (LabelEncoder) foi removido.
+        bst = load_models() 
+        # O encoder agora prioriza o S3
         encoder = load_encoder()
     
     # Carregar/Gerar embeddings
@@ -602,8 +635,13 @@ def main():
         # Executar matching
         with st.spinner(f"🔍 Analisando {len(cdf):,} candidatos (Top {top_k_for_xgboost} para XGBoost)..."):
             start_time = time.time()
+            
+            # Criamos um LabelEncoder mock (vazio) apenas para satisfazer a assinatura 
+            # da função predict_match_and_rank, mas ele não será usado.
+            le_mock = LabelEncoder() 
+            
             results_df = predict_match_and_rank(
-                selected_vaga_emb, candidate_embeddings, cdf, bst, le, top_k=top_k_for_xgboost
+                selected_vaga_emb, candidate_embeddings, cdf, bst, le_mock, top_k=top_k_for_xgboost
             )
             processing_time = time.time() - start_time
         

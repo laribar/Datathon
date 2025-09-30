@@ -12,7 +12,8 @@ import logging
 import html
 from datetime import datetime
 from typing import Any, List, Tuple, Optional
-
+import plotly.express as px
+from wordcloud import WordCloud # Pode precisar de 'pip install wordcloud'
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -653,340 +654,452 @@ def display_load_logs(log_messages: List[str]) -> bool:
 # 7. FUNÇÕES DE PÁGINAS (PAINEL, ADMIN E MATCHING)
 # ==============================================================================
 
-# --- PÁGINA DE ADMIN ---
+# --- PÁGINA DE ADMIN (MANTIDA IGUAL) ---
 def page_admin(cdf: pd.DataFrame, vdf: pd.DataFrame):
-    """Página para importação e adição manual de candidatos/vagas."""
-    st.header("🛠️ Administração de Dados")
-    st.markdown("Use esta seção para **importar novos arquivos CSV** ou **adicionar registros manualmente** e garantir a consistência da base de dados no S3.")
+    """Página para importação e adição manual de candidatos/vagas."""
+    st.header("🛠️ Administração de Dados")
+    st.markdown("Use esta seção para **importar novos arquivos CSV** ou **adicionar registros manualmente** e garantir a consistência da base de dados no S3.")
 
-    tab_upload, tab_manual = st.tabs(["📁 Importar Arquivo CSV (Substituir)", "✏️ Adicionar Manualmente"])
+    tab_upload, tab_manual = st.tabs(["📁 Importar Arquivo CSV (Substituir)", "✏️ Adicionar Manualmente"])
 
-    # -----------------------------------------------------
-    # TAB 1: UPLOAD DE ARQUIVO
-    # -----------------------------------------------------
-    with tab_upload:
-        st.subheader("Substituir Bases de Dados no S3")
-        st.warning("⚠️ **ATENÇÃO:** O upload **substituirá** a base inteira no S3 e forçará o recálculo dos embeddings. Mantenha as colunas originais!")
+    # -----------------------------------------------------
+    # TAB 1: UPLOAD DE ARQUIVO
+    # -----------------------------------------------------
+    with tab_upload:
+        st.subheader("Substituir Bases de Dados no S3")
+        st.warning("⚠️ **ATENÇÃO:** O upload **substituirá** a base inteira no S3 e forçará o recálculo dos embeddings. Mantenha as colunas originais!")
 
-        data_type = st.radio("Tipo de Dados para Upload:", ["Candidatos", "Vagas"])
+        data_type = st.radio("Tipo de Dados para Upload:", ["Candidatos", "Vagas"])
 
-        uploaded_file = st.file_uploader(f"Selecione o arquivo CSV de {data_type.lower()}", type=["csv"])
+        uploaded_file = st.file_uploader(f"Selecione o arquivo CSV de {data_type.lower()}", type=["csv"])
 
-        if uploaded_file and st.button(f"📥 Substituir {data_type} no S3 e Recarregar", key="upload_s3"):
-            try:
-                # O upload pode vir com qualquer encoding, tentamos o mais comum ou utf-8
-                try:
-                    new_df = pd.read_csv(uploaded_file, encoding='latin-1', engine="python", on_bad_lines="skip")
-                except:
-                    uploaded_file.seek(0)
-                    new_df = pd.read_csv(uploaded_file, encoding='utf-8', engine="python", on_bad_lines="skip")
-                    
-                filename = CANDIDATOS_FILE if data_type == "Candidatos" else VAGAS_FILE
+        if uploaded_file and st.button(f"📥 Substituir {data_type} no S3 e Recarregar", key="upload_s3"):
+            try:
+                # O upload pode vir com qualquer encoding, tentamos o mais comum ou utf-8
+                try:
+                    new_df = pd.read_csv(uploaded_file, encoding='latin-1', engine="python", on_bad_lines="skip")
+                except:
+                    uploaded_file.seek(0)
+                    new_df = pd.read_csv(uploaded_file, encoding='utf-8', engine="python", on_bad_lines="skip")
+                    
+                filename = CANDIDATOS_FILE if data_type == "Candidatos" else VAGAS_FILE
 
-                if save_dataframe_to_s3(new_df, filename):
-                    st.success(f"✅ Arquivo de {data_type} substituído no S3 com sucesso! Recarregando...")
-                    time.sleep(1)
-                    st.rerun()
-                
-            except Exception as e:
-                st.error(f"❌ Erro ao processar o arquivo: {e}")
-                st.info("Verifique a codificação (latin-1 ou utf-8) e as colunas.")
+                if save_dataframe_to_s3(new_df, filename):
+                    st.success(f"✅ Arquivo de {data_type} substituído no S3 com sucesso! Recarregando...")
+                    time.sleep(1)
+                    st.rerun()
+                
+            except Exception as e:
+                st.error(f"❌ Erro ao processar o arquivo: {e}")
+                st.info("Verifique a codificação (latin-1 ou utf-8) e as colunas.")
 
-    # -----------------------------------------------------
-    # TAB 2: ADIÇÃO MANUAL
-    # -----------------------------------------------------
-    with tab_manual:
-        st.subheader("Adicionar um único registro e Atualizar o S3")
-        add_type = st.radio("Tipo de Registro para Adicionar:", ["Candidato", "Vaga"])
-        
-        if add_type == "Candidato":
-            st.markdown("Preencha os dados do novo **Candidato**:")
-            with st.form("new_candidate_form"):
-                col_name, col_email = st.columns(2)
-                nome = col_name.text_input("Nome Completo", key="new_cand_nome")
-                email = col_email.text_input("Email Principal", key="new_cand_email")
-                cv_text = st.text_area("**Texto Completo do Currículo (CRÍTICO para o Match!)**", height=250, key="new_cand_cv")
-                
-                col_meta1, col_meta2, col_meta3 = st.columns(3)
-                remuneracao = col_meta1.number_input("Remuneração Almejada (R$)", min_value=0.0, step=100.0, key="new_cand_rem")
-                escolaridade = col_meta2.selectbox("Escolaridade", cdf["escolaridade"].unique() if not cdf.empty and "escolaridade" in cdf.columns else ["Superior Completo", "Mestrado"], key="new_cand_esc")
-                area_atuacao = col_meta3.text_input("Área de Atuação", key="new_cand_area")
-                
-                submitted = st.form_submit_button("➕ Adicionar Novo Candidato e Recarregar")
+    # -----------------------------------------------------
+    # TAB 2: ADIÇÃO MANUAL (MANTIDA IGUAL)
+    # -----------------------------------------------------
+    with tab_manual:
+        st.subheader("Adicionar um único registro e Atualizar o S3")
+        add_type = st.radio("Tipo de Registro para Adicionar:", ["Candidato", "Vaga"])
+        
+        if add_type == "Candidato":
+            st.markdown("Preencha os dados do novo **Candidato**:")
+            with st.form("new_candidate_form"):
+                col_name, col_email = st.columns(2)
+                nome = col_name.text_input("Nome Completo", key="new_cand_nome")
+                email = col_email.text_input("Email Principal", key="new_cand_email")
+                cv_text = st.text_area("**Texto Completo do Currículo (CRÍTICO para o Match!)**", height=250, key="new_cand_cv")
+                
+                col_meta1, col_meta2, col_meta3 = st.columns(3)
+                remuneracao = col_meta1.number_input("Remuneração Almejada (R$)", min_value=0.0, step=100.0, key="new_cand_rem")
+                escolaridade = col_meta2.selectbox("Escolaridade", cdf["escolaridade"].unique() if not cdf.empty and "escolaridade" in cdf.columns else ["Superior Completo", "Mestrado"], key="new_cand_esc")
+                area_atuacao = col_meta3.text_input("Área de Atuação", key="new_cand_area")
+                
+                submitted = st.form_submit_button("➕ Adicionar Novo Candidato e Recarregar")
 
-                if submitted:
-                    if len(cv_text) < 50 or not nome:
-                        st.error("Nome e o Texto do Currículo (mín. 50 caracteres) são obrigatórios.")
-                    else:
-                        new_cand_data = {
-                            "nome": nome, "email": email, CV_TEXT_COL: cv_text, 
-                            "remuneracao": remuneracao, "escolaridade": escolaridade, 
-                            "area_atuacao": area_atuacao, CANDIDATO_ID_COL: "TEMP_ID",
-                        }
-                        # Usar a base original, sem o limite de linhas da inicialização
-                        cdf_full, _, _ = load_data(_max_rows=None) 
-                        updated_cdf = add_new_data_point(cdf_full, new_cand_data, CANDIDATO_ID_COL, CV_TEXT_COL, id_prefix="cand")
-                        
-                        if save_dataframe_to_s3(updated_cdf, CANDIDATOS_FILE):
-                            st.success(f"✅ Candidato **{nome}** adicionado e base atualizada no S3! Recarregando...")
-                            time.sleep(1)
-                            st.rerun()
-        
-        elif add_type == "Vaga":
-            st.markdown("Preencha os dados da nova **Vaga**:")
-            with st.form("new_vaga_form"):
-                titulo = st.text_input("Título da Vaga", key="new_vaga_titulo")
-                objetivo = st.text_area("Objetivo / Descrição Curta", key="new_vaga_objetivo")
-                atividades = st.text_area("**Principais Atividades e Requisitos (CRÍTICO para o Match!)**", height=250, key="new_vaga_atividades")
-                
-                col_vaga1, col_vaga2 = st.columns(2)
-                nivel = col_vaga1.text_input("Nível Profissional (Ex: Senior)", key="new_vaga_nivel")
-                competencias = col_vaga2.text_input("Competências/Habilidades Chave (separar por vírgula)", key="new_vaga_comp")
+                if submitted:
+                    if len(cv_text) < 50 or not nome:
+                        st.error("Nome e o Texto do Currículo (mín. 50 caracteres) são obrigatórios.")
+                    else:
+                        new_cand_data = {
+                            "nome": nome, "email": email, CV_TEXT_COL: cv_text, 
+                            "remuneracao": remuneracao, "escolaridade": escolaridade, 
+                            "area_atuacao": area_atuacao, CANDIDATO_ID_COL: "TEMP_ID",
+                        }
+                        # Usar a base original, sem o limite de linhas da inicialização
+                        cdf_full, _, _ = load_data(_max_rows=None) 
+                        updated_cdf = add_new_data_point(cdf_full, new_cand_data, CANDIDATO_ID_COL, CV_TEXT_COL, id_prefix="cand")
+                        
+                        if save_dataframe_to_s3(updated_cdf, CANDIDATOS_FILE):
+                            st.success(f"✅ Candidato **{nome}** adicionado e base atualizada no S3! Recarregando...")
+                            time.sleep(1)
+                            st.rerun()
+        
+        elif add_type == "Vaga":
+            st.markdown("Preencha os dados da nova **Vaga**:")
+            with st.form("new_vaga_form"):
+                titulo = st.text_input("Título da Vaga", key="new_vaga_titulo")
+                objetivo = st.text_area("Objetivo / Descrição Curta", key="new_vaga_objetivo")
+                atividades = st.text_area("**Principais Atividades e Requisitos (CRÍTICO para o Match!)**", height=250, key="new_vaga_atividades")
+                
+                col_vaga1, col_vaga2 = st.columns(2)
+                nivel = col_vaga1.text_input("Nível Profissional (Ex: Senior)", key="new_vaga_nivel")
+                competencias = col_vaga2.text_input("Competências/Habilidades Chave (separar por vírgula)", key="new_vaga_comp")
 
-                submitted = st.form_submit_button("➕ Adicionar Nova Vaga e Recarregar")
+                submitted = st.form_submit_button("➕ Adicionar Nova Vaga e Recarregar")
 
-                if submitted:
-                    if not titulo or len(atividades) < 50:
-                        st.error("Título e o campo 'Principais Atividades' (mín. 50 caracteres) são obrigatórios.")
-                    else:
-                        new_vaga_data = {
-                            "titulo_vaga": titulo, "objetivo_vaga": objetivo, "principais_atividades": atividades,
-                            "nivel_profissional": nivel, "competencias": competencias, VAGA_ID_COL: "TEMP_ID",
-                        }
-                        # Usar a base original, sem o limite de linhas da inicialização
-                        _, vdf_full, _ = load_data(_max_rows=None)
-                        updated_vdf = add_new_data_point(vdf_full, new_vaga_data, VAGA_ID_COL, VAGA_TEXT_COL, id_prefix="vaga")
-                        
-                        if save_dataframe_to_s3(updated_vdf, VAGAS_FILE):
-                            st.success(f"✅ Vaga **{titulo}** adicionada e base atualizada no S3! Recarregando...")
-                            time.sleep(1)
-                            st.rerun()
+                if submitted:
+                    if not titulo or len(atividades) < 50:
+                        st.error("Título e o campo 'Principais Atividades' (mín. 50 caracteres) são obrigatórios.")
+                    else:
+                        new_vaga_data = {
+                            "titulo_vaga": titulo, "objetivo_vaga": objetivo, "principais_atividades": atividades,
+                            "nivel_profissional": nivel, "competencias": competencias, VAGA_ID_COL: "TEMP_ID",
+                        }
+                        # Usar a base original, sem o limite de linhas da inicialização
+                        _, vdf_full, _ = load_data(_max_rows=None)
+                        updated_vdf = add_new_data_point(vdf_full, new_vaga_data, VAGA_ID_COL, VAGA_TEXT_COL, id_prefix="vaga")
+                        
+                        if save_dataframe_to_s3(updated_vdf, VAGAS_FILE):
+                            st.success(f"✅ Vaga **{titulo}** adicionada e base atualizada no S3! Recarregando...")
+                            time.sleep(1)
+                            st.rerun()
 
-# --- PÁGINA DE PAINEL ---
-def page_dashboard(cdf: pd.DataFrame, vdf: pd.DataFrame):
-    """Página de painel com estatísticas gerais sobre os dados."""
-    st.header("📊 Painel de Estatísticas de Dados")
+# --- PÁGINA DE PAINEL DE ESTATÍSTICAS (NOVO E MELHORADO) ---
+def page_data_panel(cdf: pd.DataFrame, vdf: pd.DataFrame):
+    """Página de dashboard com estatísticas e distribuições de dados (Geografia, Escolaridade e Skills)."""
+    st.title("📊 Painel de Estatísticas de Dados")
     
-    col_c, col_v = st.columns(2)
+    # -----------------------------------------------------
+    # 1. ESTATÍSTICAS GERAIS (Métricas)
+    # -----------------------------------------------------
+    col_cand, col_vagas = st.columns(2)
+    
+    col_cand.metric("Total de Candidatos", f"{len(cdf):,}")
+    col_vagas.metric("Total de Vagas", f"{len(vdf):,}")
 
-    with col_c:
-        st.metric("Total de Candidatos", f"{len(cdf):,}")
-        st.markdown("##### Top 7 Escolaridades")
-        if not cdf.empty and "escolaridade" in cdf.columns:
-            esc_counts = cdf["escolaridade"].value_counts().nlargest(7)
-            esc_df = esc_counts.reset_index()
-            esc_df.columns = ["Escolaridade", "Contagem"]
-            st.bar_chart(esc_df, x="Escolaridade", y="Contagem")
-        else:
-            st.caption("Dados de escolaridade indisponíveis.")
-
-    with col_v:
-        st.metric("Total de Vagas", f"{len(vdf):,}")
-        st.markdown("##### Top 5 Títulos de Vaga")
-        if not vdf.empty and "titulo_vaga" in vdf.columns:
-            title_counts = vdf["titulo_vaga"].value_counts().nlargest(5)
-            title_df = title_counts.reset_index()
-            title_df.columns = ["Título da Vaga", "Contagem"]
-            st.bar_chart(title_df, x="Título da Vaga", y="Contagem")
-        else:
-            st.caption("Dados de vagas indisponíveis.")
-            
     st.markdown("---")
     
-    st.subheader("Distribuição Geográfica de Candidatos (Top 10 Estados)")
-    if "estado" in cdf.columns and "pais" in cdf.columns:
-        br_cands = cdf[cdf["pais"].astype(str).str.lower() == "brasil"]
-        if not br_cands.empty:
-            state_counts = br_cands["estado"].value_counts().nlargest(10).reset_index()
-            state_counts.columns = ["Estado", "Candidatos"]
-            st.dataframe(state_counts, use_container_width=True)
+    col_stats_vagas, col_stats_cand = st.columns(2)
+
+    # -----------------------------------------------------
+    # 2. VAGAS E ESCOLARIDADE (Gráficos Interativos)
+    # -----------------------------------------------------
+    with col_stats_vagas:
+        st.subheader("Top Títulos de Vaga")
+        if not vdf.empty and 'titulo_vaga' in vdf.columns:
+            top_vagas = vdf['titulo_vaga'].value_counts().head(7).reset_index()
+            top_vagas.columns = ['Título da Vaga', 'Contagem']
+            
+            fig_vagas = px.bar(
+                top_vagas, 
+                x='Título da Vaga', 
+                y='Contagem', 
+                title='Top 7 Títulos de Vaga',
+                color_discrete_sequence=px.colors.qualitative.Plotly
+            )
+            st.plotly_chart(fig_vagas, use_container_width=True)
         else:
-            st.caption("Dados geográficos insuficientes ou não-Brasil.")
+            st.info("Dados de vagas não disponíveis ou incompletos.")
 
-# --- PÁGINA DE MATCHING DE VAGAS CRÍTICAS (COM PAGINAÇÃO) ---
-def page_critical_match(cdf, vdf, encoder, bst):
-    """Filtra vagas críticas e busca o top candidato (foco em potencial) com paginação eficiente."""
-    
-    st.title("🥇 Match de Vagas Críticas (Potencial de Aderência)")
-    st.markdown("Selecione uma vaga para ver os candidatos com maior potencial de aderência.")
-    
-    # Inicializa o estado da página se não existir
-    if 'current_match_page' not in st.session_state:
-        st.session_state['current_match_page'] = 1
-    if 'match_results_per_page' not in st.session_state:
-        st.session_state['match_results_per_page'] = 10
-        
-    full_cdf = cdf
-    full_cdf_embeddings = None
-
-    # --- Sidebar: Configurações de Match ---
-    with st.sidebar:
-        st.header("⚙️ Configurações de Match")
-        
-        # Otimização: Carregar a base completa (42k)
-        load_full_data = st.checkbox("Carregar Base Completa (> 10k candidatos)", value=False, key="load_full_data_checkbox")
-        
-        if load_full_data:
-            with st.spinner("Carregando toda a base..."):
-                 # Carrega a base completa (chamada sem limite de rows)
-                full_cdf, _, log_messages_full = load_data(_max_rows=None)
+    with col_stats_cand:
+        st.subheader("Distribuição por Escolaridade")
+        if not cdf.empty and 'escolaridade' in cdf.columns and cdf['escolaridade'].notna().any():
+            escolaridade_counts = cdf['escolaridade'].value_counts().head(7).reset_index()
+            escolaridade_counts.columns = ['Escolaridade', 'Contagem']
             
-            st.success(f"Base completa carregada com {len(full_cdf):,} candidatos.")
-            
-    match_cdf = full_cdf if load_full_data else cdf
-
-    # 1. Obter Embeddings dos Candidatos (Cache)
-    with st.spinner("Preparando embeddings de candidatos..."):
-        full_cdf_embeddings = get_or_create_embeddings(
-            match_cdf,
-            CV_TEXT_COL,
-            EMBEDDINGS_FILE,
-            encoder,
-            _use_cache=True
-        )
-
-    # 2. Seleção de Vaga
-    if vdf.empty:
-        st.error("Não há vagas disponíveis para a busca.")
-        return
-
-    # Opções de vagas
-    vaga_map = {f"{row['titulo_vaga']} (ID: {row[VAGA_ID_COL]})": row[VAGA_ID_COL] for _, row in vdf.iterrows()}
-    vaga_display_options = list(vaga_map.keys())
-    
-    # CRÍTICO: Usamos st.session_state para armazenar a vaga selecionada
-    # Usamos uma chave extra para detectar mudança
-    last_selected_vaga_key = st.session_state.get('last_vaga_selector_key_state', vaga_display_options[0] if vaga_display_options else None)
-        
-    selected_vaga_display = st.selectbox(
-        "Selecione uma Vaga",
-        vaga_display_options,
-        key="vaga_selector_key" 
-    )
-    
-    if not selected_vaga_display:
-        st.info("Selecione uma vaga para iniciar o match.")
-        return
-
-    # Se a vaga mudou, reseta a página para 1
-    if selected_vaga_display != last_selected_vaga_key:
-         st.session_state['current_match_page'] = 1
-    
-    st.session_state['last_vaga_selector_key_state'] = selected_vaga_display # Atualiza o estado da vaga
-
-    selected_vaga_id = vaga_map[selected_vaga_display]
-    vaga_row = vdf[vdf[VAGA_ID_COL] == selected_vaga_id].iloc[0]
-    vaga_text = vaga_row[VAGA_TEXT_COL]
-    
-    # 3. Gerar Embedding da Vaga
-    with st.spinner("Calculando embedding da vaga..."):
-        vaga_embedding_384 = encoder.encode([vaga_text], convert_to_numpy=True).astype("float32").reshape(-1)
-
-    st.markdown(f"#### Vaga Selecionada: **{vaga_row['titulo_vaga']}**")
-    st.caption(f"Descrição: {vaga_row['objetivo_vaga'][:150]}...")
-    
-    # 4. Predição e Ranking
-    if not match_cdf.empty and full_cdf_embeddings.size > 0:
-        
-        # --- CONFIGURAÇÕES DE RANKING NA SIDEBAR ---
-        with st.sidebar:
-            top_k_for_ml = st.slider(
-                "Candidatos para Pré-Filtragem (Top K)", 
-                min_value=100, 
-                max_value=min(10000, len(match_cdf)), 
-                value=min(2000, len(match_cdf)), 
-                step=100, 
-                key="top_k_slider"
+            fig_esc = px.pie(
+                escolaridade_counts, 
+                names='Escolaridade', 
+                values='Contagem', 
+                title='Top 7 Escolaridades (Percentual)',
+                hole=0.4
             )
-            
-            st.session_state['match_results_per_page'] = st.number_input(
-                "Resultados por Página", 
-                min_value=5, 
-                max_value=100, 
-                value=st.session_state.match_results_per_page, 
-                step=5,
-                key="results_per_page_input"
-            )
-
-        # Usamos st.cache_data para cachear o resultado do RANKING e evitar recálculo desnecessário
-        # O hash depende do ID da vaga, do hash dos embeddings e do Top K
-        @st.cache_data(
-            show_spinner="Rodando match ML e Ranking...", 
-            ttl=3600,
-            # CRÍTICO: Exclui o modelo 'bst_model' do hash, evitando o UnhashableParamError
-            hash_funcs={type(bst): lambda _: None} 
-        )
-        def run_prediction_and_rank(vaga_id, vaga_emb, cdf_hash, c_emb, bst_model, top_k):
-            return predict_match_and_rank(
-                vaga_emb,
-                c_emb,
-                match_cdf,
-                bst_model,
-                top_k=top_k
-            )
-
-        # Gerar o hash dos candidatos para o cache (garantindo que se o cdf mudar, o cache invalida)
-        match_cdf_hash = _hash_df(match_cdf, [CANDIDATO_ID_COL, CV_TEXT_COL], sample_rows=20000)
-        
-        results_df = run_prediction_and_rank(
-            selected_vaga_id,
-            vaga_embedding_384,
-            match_cdf_hash,
-            full_cdf_embeddings,
-            bst,
-            top_k_for_ml
-        )
-
-        if not results_df.empty:
-            
-            total_results = len(results_df)
-            results_per_page = st.session_state.match_results_per_page
-            total_pages = int(np.ceil(total_results / results_per_page))
-            
-            # Garante que a página atual seja válida
-            if st.session_state.current_match_page > total_pages:
-                st.session_state.current_match_page = 1
-            
-            # --- LÓGICA DE PAGINAÇÃO ---
-            col_prev, col_info, col_next = st.columns([1, 2, 1])
-            
-            def set_page(page_num):
-                st.session_state.current_match_page = page_num
-
-            if col_prev.button("⬅️ Anterior", disabled=(st.session_state.current_match_page <= 1), on_click=set_page, args=(st.session_state.current_match_page - 1,)):
-                pass # Ação é feita no on_click
-            
-            # Adiciona o seletor de página para navegação rápida
-            with col_info:
-                current_page = st.session_state.current_match_page
-                
-                # Exibe a informação da página/total
-                st.markdown(
-                    f"**Exibindo {((current_page - 1) * results_per_page) + 1} a {min(current_page * results_per_page, total_results)}** | **Página {current_page} de {total_pages}**", 
-                    unsafe_allow_html=True, 
-                    help="A navegação é instantânea porque o cálculo já está em cache."
-                )
-
-            if col_next.button("Próxima ➡️", disabled=(st.session_state.current_match_page >= total_pages), on_click=set_page, args=(st.session_state.current_match_page + 1,)):
-                pass # Ação é feita no on_click
-                
-            start_index = (st.session_state.current_match_page - 1) * results_per_page
-            end_index = start_index + results_per_page
-            
-            # Fatiamento do DataFrame para exibir APENAS a página atual
-            results_to_display = results_df.iloc[start_index:end_index]
-            
-            st.markdown("---")
-            st.subheader(f"Resultado: Top {total_results} Candidatos com Maior Potencial de Match")
-            
-            # 5. Exibição
-            for index, row in results_to_display.iterrows():
-                # O rank é o índice original no DataFrame ranqueado + 1
-                display_candidate_card(row, index + 1, vaga_row, vaga_embedding_384, encoder)
+            st.plotly_chart(fig_esc, use_container_width=True)
         else:
-            st.warning("⚠️ Não foi possível gerar o ranking de candidatos.")
+            st.info("Dados de escolaridade indisponíveis ou vazios.")
+
+    st.markdown("---")
+    
+    # -----------------------------------------------------
+    # 3. ESTATÍSTICAS GEOGRÁFICAS (Estados)
+    # -----------------------------------------------------
+    st.subheader("🗺️ Distribuição Geográfica de Candidatos (Top 10 Estados)")
+    
+    if not cdf.empty and 'estado' in cdf.columns and cdf['estado'].notna().any():
+        # Filtra e conta os estados
+        df_geo = cdf[cdf['estado'].astype(str).str.len().between(2, 3)].copy()
+        
+        top_estados = df_geo['estado'].value_counts().head(10).reset_index()
+        top_estados.columns = ['Estado', 'Contagem']
+        
+        fig_geo = px.bar(
+            top_estados, 
+            x='Estado', 
+            y='Contagem', 
+            title='Contagem de Candidatos por Estado',
+            color='Contagem',
+            color_continuous_scale=px.colors.sequential.Teal
+        )
+        st.plotly_chart(fig_geo, use_container_width=True)
     else:
-        st.info("Aguardando carregamento dos dados/embeddings.")
+        st.info("Coluna 'estado' não encontrada ou vazia no DataFrame de candidatos.")
+
+    st.markdown("---")
+    
+    # -----------------------------------------------------
+    # 4. ESTATÍSTICAS POR COMPETÊNCIA (Skills)
+    # -----------------------------------------------------
+    st.subheader("🧠 Distribuição das Top 15 Competências (Skills) no CV")
+    
+    if not cdf.empty and CV_TEXT_COL in cdf.columns and 'default_skills' in globals():
+        
+        @st.cache_data(show_spinner="Calculando frequência de skills...", ttl=3600)
+        def calculate_skill_frequency(data_df: pd.DataFrame, text_col: str):
+            """Calcula a frequência das skills nos CVs."""
+            # Importa as dependências apenas dentro da função cacheada
+            from collections import Counter
+            from wordcloud import WordCloud 
+            
+            # Use a lista DEFAULT_SKILLS definida no bloco 2
+            skills_list = globals().get('DEFAULT_SKILLS', []) 
+            
+            # Limpa o texto e combina em uma string única
+            combined_text = " ".join(data_df[text_col].astype(str).apply(_norm).dropna().tolist())
+            
+            # Conta a ocorrência das skills-alvo no texto combinado
+            skill_counts = Counter({
+                skill: combined_text.count(skill)
+                for skill in skills_list
+            })
+            
+            top_skills = skill_counts.most_common(15)
+            
+            return pd.DataFrame(top_skills, columns=['Skill', 'Contagem'])
+
+        top_skills_df = calculate_skill_frequency(cdf, CV_TEXT_COL)
+
+        if not top_skills_df.empty and top_skills_df['Contagem'].sum() > 0:
+            
+            # Gráfico de Barras para Top Skills
+            fig_skills = px.bar(
+                top_skills_df.sort_values('Contagem', ascending=True),
+                x='Contagem',
+                y='Skill',
+                orientation='h',
+                title='Top 15 Skills (Frequência Absoluta)',
+                color='Contagem',
+                color_continuous_scale=px.colors.sequential.Viridis
+            )
+            st.plotly_chart(fig_skills, use_container_width=True)
+            
+            # Opcional: Nuvem de Palavras
+            st.markdown("##### Nuvem de Palavras das Skills (Visualização Alternativa)")
+            try:
+                # O WordCloud precisa ser importado no Bloco 1, mas o objeto é criado aqui
+                from wordcloud import WordCloud 
+                word_freq = dict(zip(top_skills_df['Skill'], top_skills_df['Contagem']))
+                
+                wc = WordCloud(
+                    background_color="black", 
+                    width=800, 
+                    height=400, 
+                    max_words=15, 
+                    colormap="viridis"
+                ).generate_from_frequencies(word_freq)
+
+                st.image(wc.to_array(), use_column_width=True)
+            except ImportError:
+                st.warning("Para ver a nuvem de palavras, instale 'wordcloud' (`pip install wordcloud`).")
+
+        else:
+            st.info("Não foi possível calcular a frequência das competências (skills) na base.")
+
+    else:
+        st.info("Dados de candidatos, coluna de CV ('curriculo_pt') ou lista DEFAULT_SKILLS ausentes.")
+
+# --- PÁGINA DE MATCHING DE VAGAS CRÍTICAS (MANTIDA IGUAL) ---
+def page_critical_match(cdf, vdf, encoder, bst):
+    """Filtra vagas críticas e busca o top candidato (foco em potencial) com paginação eficiente."""
+    
+    st.title("🥇 Match de Vagas Críticas (Potencial de Aderência)")
+    st.markdown("Selecione uma vaga para ver os candidatos com maior potencial de aderência.")
+    
+    # Inicializa o estado da página se não existir
+    if 'current_match_page' not in st.session_state:
+        st.session_state['current_match_page'] = 1
+    if 'match_results_per_page' not in st.session_state:
+        st.session_state['match_results_per_page'] = 10
+        
+    full_cdf = cdf
+    full_cdf_embeddings = None
+
+    # --- Sidebar: Configurações de Match ---
+    with st.sidebar:
+        st.header("⚙️ Configurações de Match")
+        
+        # Otimização: Carregar a base completa (42k)
+        load_full_data = st.checkbox("Carregar Base Completa (> 10k candidatos)", value=False, key="load_full_data_checkbox")
+        
+        if load_full_data:
+            with st.spinner("Carregando toda a base..."):
+                 # Carrega a base completa (chamada sem limite de rows)
+                full_cdf, _, log_messages_full = load_data(_max_rows=None)
+            
+            st.success(f"Base completa carregada com {len(full_cdf):,} candidatos.")
+            
+    match_cdf = full_cdf if load_full_data else cdf
+
+    # 1. Obter Embeddings dos Candidatos (Cache)
+    with st.spinner("Preparando embeddings de candidatos..."):
+        full_cdf_embeddings = get_or_create_embeddings(
+            match_cdf,
+            CV_TEXT_COL,
+            EMBEDDINGS_FILE,
+            encoder,
+            _use_cache=True
+        )
+
+    # 2. Seleção de Vaga
+    if vdf.empty:
+        st.error("Não há vagas disponíveis para a busca.")
+        return
+
+    # Opções de vagas
+    vaga_map = {f"{row['titulo_vaga']} (ID: {row[VAGA_ID_COL]})": row[VAGA_ID_COL] for _, row in vdf.iterrows()}
+    vaga_display_options = list(vaga_map.keys())
+    
+    # CRÍTICO: Usamos st.session_state para armazenar a vaga selecionada
+    # Usamos uma chave extra para detectar mudança
+    last_selected_vaga_key = st.session_state.get('last_vaga_selector_key_state', vaga_display_options[0] if vaga_display_options else None)
+        
+    selected_vaga_display = st.selectbox(
+        "Selecione uma Vaga",
+        vaga_display_options,
+        key="vaga_selector_key" 
+    )
+    
+    if not selected_vaga_display:
+        st.info("Selecione uma vaga para iniciar o match.")
+        return
+
+    # Se a vaga mudou, reseta a página para 1
+    if selected_vaga_display != last_selected_vaga_key:
+         st.session_state['current_match_page'] = 1
+    
+    st.session_state['last_vaga_selector_key_state'] = selected_vaga_display # Atualiza o estado da vaga
+
+    selected_vaga_id = vaga_map[selected_vaga_display]
+    vaga_row = vdf[vdf[VAGA_ID_COL] == selected_vaga_id].iloc[0]
+    vaga_text = vaga_row[VAGA_TEXT_COL]
+    
+    # 3. Gerar Embedding da Vaga
+    with st.spinner("Calculando embedding da vaga..."):
+        vaga_embedding_384 = encoder.encode([vaga_text], convert_to_numpy=True).astype("float32").reshape(-1)
+
+    st.markdown(f"#### Vaga Selecionada: **{vaga_row['titulo_vaga']}**")
+    st.caption(f"Descrição: {vaga_row['objetivo_vaga'][:150]}...")
+    
+    # 4. Predição e Ranking
+    if not match_cdf.empty and full_cdf_embeddings.size > 0:
+        
+        # --- CONFIGURAÇÕES DE RANKING NA SIDEBAR ---
+        with st.sidebar:
+            top_k_for_ml = st.slider(
+                "Candidatos para Pré-Filtragem (Top K)", 
+                min_value=100, 
+                max_value=min(10000, len(match_cdf)), 
+                value=min(2000, len(match_cdf)), 
+                step=100, 
+                key="top_k_slider"
+            )
+            
+            st.session_state['match_results_per_page'] = st.number_input(
+                "Resultados por Página", 
+                min_value=5, 
+                max_value=100, 
+                value=st.session_state.match_results_per_page, 
+                step=5,
+                key="results_per_page_input"
+            )
+
+        # Usamos st.cache_data para cachear o resultado do RANKING e evitar recálculo desnecessário
+        # O hash depende do ID da vaga, do hash dos embeddings e do Top K
+        @st.cache_data(
+            show_spinner="Rodando match ML e Ranking...", 
+            ttl=3600,
+            # CRÍTICO: Exclui o modelo 'bst_model' do hash, evitando o UnhashableParamError
+            hash_funcs={type(bst): lambda _: None} 
+        )
+        def run_prediction_and_rank(vaga_id, vaga_emb, cdf_hash, c_emb, bst_model, top_k):
+            return predict_match_and_rank(
+                vaga_emb,
+                c_emb,
+                match_cdf,
+                bst_model,
+                top_k=top_k
+            )
+
+        # Gerar o hash dos candidatos para o cache (garantindo que se o cdf mudar, o cache invalida)
+        match_cdf_hash = _hash_df(match_cdf, [CANDIDATO_ID_COL, CV_TEXT_COL], sample_rows=20000)
+        
+        results_df = run_prediction_and_rank(
+            selected_vaga_id,
+            vaga_embedding_384,
+            match_cdf_hash,
+            full_cdf_embeddings,
+            bst,
+            top_k_for_ml
+        )
+
+        if not results_df.empty:
+            
+            total_results = len(results_df)
+            results_per_page = st.session_state.match_results_per_page
+            total_pages = int(np.ceil(total_results / results_per_page))
+            
+            # Garante que a página atual seja válida
+            if st.session_state.current_match_page > total_pages:
+                st.session_state.current_match_page = 1
+            
+            # --- LÓGICA DE PAGINAÇÃO ---
+            col_prev, col_info, col_next = st.columns([1, 2, 1])
+            
+            def set_page(page_num):
+                st.session_state.current_match_page = page_num
+
+            if col_prev.button("⬅️ Anterior", disabled=(st.session_state.current_match_page <= 1), on_click=set_page, args=(st.session_state.current_match_page - 1,)):
+                pass # Ação é feita no on_click
+            
+            # Adiciona o seletor de página para navegação rápida
+            with col_info:
+                current_page = st.session_state.current_match_page
+                
+                # Exibe a informação da página/total
+                st.markdown(
+                    f"**Exibindo {((current_page - 1) * results_per_page) + 1} a {min(current_page * results_per_page, total_results)}** | **Página {current_page} de {total_pages}**", 
+                    unsafe_allow_html=True, 
+                    help="A navegação é instantânea porque o cálculo já está em cache."
+                )
+
+            if col_next.button("Próxima ➡️", disabled=(st.session_state.current_match_page >= total_pages), on_click=set_page, args=(st.session_state.current_match_page + 1,)):
+                pass # Ação é feita no on_click
+                
+            start_index = (st.session_state.current_match_page - 1) * results_per_page
+            end_index = start_index + results_per_page
+            
+            # Fatiamento do DataFrame para exibir APENAS a página atual
+            results_to_display = results_df.iloc[start_index:end_index]
+            
+            st.markdown("---")
+            st.subheader(f"Resultado: Top {total_results} Candidatos com Maior Potencial de Match")
+            
+            # 5. Exibição
+            for index, row in results_to_display.iterrows():
+                # O rank é o índice original no DataFrame ranqueado + 1
+                display_candidate_card(row, index + 1, vaga_row, vaga_embedding_384, encoder)
+        else:
+            st.warning("⚠️ Não foi possível gerar o ranking de candidatos.")
+    else:
+        st.info("Aguardando carregamento dos dados/embeddings.")
 
 # ==============================================================================
 # 8. FUNÇÃO PRINCIPAL DE INICIALIZAÇÃO

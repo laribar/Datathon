@@ -49,8 +49,14 @@ MODEL_FILE = "modelo_match_xgboost.pkl"
 ENCODER_FILE = "encoder_le.pkl"
 
 # Colunas para o embedding
-CV_TEXT_COL = 'cv_text'
-VAGA_TEXT_COL = 'vaga_text'
+# 🚨 CORRIGIDO: Nome real da coluna de texto do CV
+CV_TEXT_COL = 'curriculo_pt' 
+
+# 🚨 CORRIGIDO: Nome real da coluna de ID da Vaga
+VAGA_ID_COL = 'id' 
+
+# Coluna para o texto combinado da vaga (Criada em load_data)
+VAGA_TEXT_COL = 'vaga_text' 
 
 # --- 🎯 CORREÇÃO CRÍTICA: INJEÇÃO DE SECRETS DO STREAMLIT CLOUD ---
 if "aws" in st.secrets:
@@ -159,9 +165,16 @@ def load_encoder(model_name: str = 'all-MiniLM-L6-v2') -> SentenceTransformer:
         st.error(f"❌ Falha ao carregar encoder: {e}")
         st.stop()
 
+
 @st.cache_data(show_spinner="Carregando dados dos candidatos e vagas do S3...")
 def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Carrega os DataFrames de candidatos e vagas do S3."""
+    
+    # 🚨 Se você alterou o nome da coluna de ID da vaga para um nome como 'vaga_id', 
+    # você precisa garantir que essa nova variável esteja definida na Seção 2.
+    # Vou usar 'id_vaga' como placeholder, mas substitua se necessário.
+    VAGA_ID_COL_PLACEHOLDER = 'id_vaga'
+    
     log_messages = []
     cdf = pd.DataFrame()
     vdf = pd.DataFrame()
@@ -177,8 +190,13 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
             st.error(f"❌ Arquivo de candidatos não encontrado: s3://{candidatos_s3_path}")
         else:
             with fs.open(candidatos_s3_path, 'rb') as f:
+                # 🎯 1. CORREÇÃO DE ENCODING APLICADA + max_rows
                 cdf = pd.read_csv(f, nrows=_max_rows, encoding='latin-1') 
             
+            # 🎯 2. VALIDAÇÃO DE COLUNA DE CV (depende do ajuste da variável global)
+            if CV_TEXT_COL not in cdf.columns:
+                 raise ValueError(f"O arquivo de candidatos não contém a coluna necessária: ['{CV_TEXT_COL}']")
+                
             # Limpeza básica dos dados
             cdf = cdf.dropna(subset=[CV_TEXT_COL])
             cdf[CV_TEXT_COL] = cdf[CV_TEXT_COL].astype(str)
@@ -187,6 +205,8 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
 
     except Exception as e:
         log_messages.append(f"❌ Erro ao carregar candidatos: {str(e)}")
+        # Garante que cdf seja vazio em caso de erro.
+        cdf = pd.DataFrame() 
 
     try:
         # Carregar Vagas
@@ -197,28 +217,44 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
             st.error(f"❌ Arquivo de vagas não encontrado: s3://{vagas_s3_path}")
         else:
             with fs.open(vagas_s3_path, 'rb') as f:
+                # 🎯 3. CORREÇÃO DE ENCODING APLICADA
                 vdf = pd.read_csv(f, encoding='latin-1')
             
-            # 🎯 ADICIONE VERIFICAÇÃO DE COLUNAS AQUI:
-            required_vaga_cols = ['id_vaga', 'titulo_vaga', VAGA_TEXT_COL]
+            # 🎯 4. VALIDAÇÃO DAS COLUNAS ESSENCIAIS
+            required_vaga_cols = [VAGA_ID_COL_PLACEHOLDER, 'titulo_vaga']
             if not all(col in vdf.columns for col in required_vaga_cols):
                  missing_cols = [col for col in required_vaga_cols if col not in vdf.columns]
                  raise ValueError(f"O arquivo de vagas não contém as colunas necessárias: {missing_cols}")
                 
-            # Limpeza básica das vagas (agora que sabemos que as colunas existem)
+            # 🎯 5. CRIAÇÃO DA COLUNA VAGA_TEXT (que estava faltando)
+            # Use os nomes finais das colunas do seu MAPPING (valores à direita)
+            text_cols_to_combine = [
+                'titulo_vaga', 'objetivo_vaga', 'nivel_profissional',
+                'principais_atividades', 'competencias', 'habilidades_comportamentais'
+                # Adicione quaisquer outras que ajudem no matching, se existirem.
+            ]
+            
+            # Junta os textos das colunas
+            existing_text_cols = [col for col in text_cols_to_combine if col in vdf.columns]
+            
+            if len(existing_text_cols) > 0:
+                vdf[VAGA_TEXT_COL] = vdf[existing_text_cols].fillna('').astype(str).agg(' '.join, axis=1)
+            else:
+                 raise ValueError(f"Nenhuma coluna base encontrada para criar a coluna '{VAGA_TEXT_COL}'. Verifique seu arquivo CSV.")
+
+            # Limpeza básica das vagas 
             vdf = vdf.dropna(subset=[VAGA_TEXT_COL])
-            vdf[VAGA_TEXT_COL] = vdf[VAGA_TEXT_COL].astype(str)
             
             log_messages.append(f"✅ Vagas: {len(vdf):,} registros")
 
     except Exception as e:
         log_messages.append(f"❌ Erro ao carregar vagas: {str(e)}")
-        # Se houver erro, garantimos que vdf seja vazio para falhar na validação final.
         vdf = pd.DataFrame() 
 
     # Exibir logs de forma organizada
     with st.container():
         st.subheader("📊 Status do Carregamento de Dados")
+        # ... (código de exibição dos logs) ...
         for msg in log_messages:
             if "✅" in msg:
                 st.success(msg)
@@ -232,11 +268,12 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
         st.error("🚨 Crítico: Dados insuficientes para continuar.")
         st.info("""
         **Solução:**
-        1. Verifique se os arquivos existem no S3
-        2. Verifique as permissões do bucket (erro 'Forbidden')
-        3. Confirme os nomes dos arquivos:
-            - applicants_clean.csv
-            - vagas_clean.csv
+        1. **Corrija os nomes das colunas** no seu script Python (Seção 2: CV_TEXT_COL, VAGA_ID_COL).
+        2. Verifique se os arquivos existem no S3
+        3. Verifique as permissões do bucket (erro 'Forbidden')
+        4. Confirme os nomes dos arquivos:
+             - applicants_clean.csv
+             - vagas_clean.csv
         """)
         st.stop()
     

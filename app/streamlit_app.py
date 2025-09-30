@@ -49,7 +49,7 @@ MODEL_FILE = "modelo_match_xgboost.pkl"
 ENCODER_FILE = "encoder_le.pkl"
 
 # Colunas para o embedding e IDs
-# 🚨 Verifique este nome: Se no seu CSV for 'id' ou outro nome, altere AQUI!
+# 🚨 CANDIDATO ID: Mantendo o nome 'id_candidato' conforme o erro, mas corrigindo o separador para carregar a coluna.
 CV_TEXT_COL = 'curriculo_pt' 
 VAGA_ID_COL = 'id' 
 CANDIDATO_ID_COL = 'id_candidato' 
@@ -184,14 +184,17 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
             raise FileNotFoundError(f"Arquivo não encontrado: s3://{candidatos_s3_path}")
         
         with fs.open(candidatos_s3_path, 'rb') as f:
-            cdf = pd.read_csv(f, nrows=_max_rows, encoding='latin-1') 
+            # 🎯 AJUSTE DO DELIMITADOR: Passando sep=';' para lidar com arquivos no formato brasileiro/regional
+            # Se o delimitador for outra coisa (ex: vírgula, mas com problemas de aspas), o 'sep=',' resolve. 
+            # Mas o ';' é o mais comum nesses casos.
+            cdf = pd.read_csv(f, nrows=_max_rows, encoding='latin-1', sep=';') 
         
         # 🎯 VALIDAÇÃO DAS COLUNAS ESSENCIAIS DOS CANDIDATOS
         required_candidato_cols = [CANDIDATO_ID_COL, CV_TEXT_COL]
         if not all(col in cdf.columns for col in required_candidato_cols):
              missing_cols = [col for col in required_candidato_cols if col not in cdf.columns]
              # Levanta um erro específico que reflete o problema
-             raise KeyError(f"O arquivo de candidatos não contém as colunas necessárias: {missing_cols}. Revise a variável CANDIDATO_ID_COL ou CV_TEXT_COL.")
+             raise KeyError(f"O arquivo de candidatos não contém as colunas necessárias: {missing_cols}. Revise a variável CANDIDATO_ID_COL ou CV_TEXT_COL e o delimitador (sep=';' ou outro).")
              
         # Limpeza básica dos dados
         cdf = cdf.dropna(subset=required_candidato_cols)
@@ -214,6 +217,7 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
             raise FileNotFoundError(f"Arquivo não encontrado: s3://{vagas_s3_path}")
         
         with fs.open(vagas_s3_path, 'rb') as f:
+            # Mantendo o padrão para vagas (assumindo que o delimitador padrão (,) funcionou para o arquivo de vagas)
             vdf = pd.read_csv(f, encoding='latin-1')
         
         # VALIDAÇÃO DAS COLUNAS ESSENCIAIS
@@ -259,17 +263,17 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
     if cdf.empty or vdf.empty:
         st.error("🚨 Crítico: Dados insuficientes para continuar.")
         st.info(f"""
-        **Atenção ao Erro nos Candidatos:**
-        O problema parece estar na coluna de ID. Se a mensagem do seu log foi `❌ Erro ao carregar candidatos: ['id_candidato']`, isso indica que a coluna **'{CANDIDATO_ID_COL}'** não existe no seu arquivo **applicants_clean.csv**.
-        
-        **Solução:**
-        1. Confirme o nome correto da coluna de ID no seu `applicants_clean.csv`.
-        2. Altere a variável **`CANDIDATO_ID_COL`** na **Seção 2** do código para o nome correto (ex: se for apenas 'id', mude para `CANDIDATO_ID_COL = 'id'`).
+        **Atenção aos Erros de Dados:**
+        1. **Separador (Delimiter):** A tentativa de correção usou **`sep=';'`** para o arquivo de candidatos. Se o problema persistir, pode ser que o delimitador seja outro, como `sep=','` (vírgula com aspas mal formatadas) ou `sep='|'` (pipe).
+        2. **Nome da Coluna:** A coluna ID do candidato é esperada como **'{CANDIDATO_ID_COL}'**. Se o delimitador foi corrigido e o erro persistir, o nome da coluna no arquivo CSV pode ser diferente (ex: 'id').
         """)
         st.stop()
     
     return cdf, vdf
 
+# ... O restante do código (get_or_create_embeddings, predict_match_and_rank, display_candidate_card, main) 
+# permanece o mesmo que na resposta anterior.
+# Ele se baseia nas funções de carregamento já ajustadas.
 @st.cache_data(show_spinner="Gerenciando cache de embeddings...")
 def get_or_create_embeddings(
     df: pd.DataFrame, 

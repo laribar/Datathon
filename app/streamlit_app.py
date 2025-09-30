@@ -910,7 +910,12 @@ def page_critical_match(cdf, vdf, encoder, bst):
 
         # Usamos st.cache_data para cachear o resultado do RANKING e evitar recálculo desnecessário
         # O hash depende do ID da vaga, do hash dos embeddings e do Top K
-        @st.cache_data(show_spinner="Rodando match ML e Ranking...", ttl=3600)
+        @st.cache_data(
+            show_spinner="Rodando match ML e Ranking...", 
+            ttl=3600,
+            # CRÍTICO: Exclui o modelo 'bst_model' do hash, evitando o UnhashableParamError
+            hash_funcs={type(bst): lambda _: None} 
+        )
         def run_prediction_and_rank(vaga_id, vaga_emb, cdf_hash, c_emb, bst_model, top_k):
             return predict_match_and_rank(
                 vaga_emb,

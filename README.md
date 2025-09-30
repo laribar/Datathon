@@ -26,7 +26,7 @@ Os arquivos mais pesados (modelos e dados limpos) foram colocados na AWS S3 para
 
 📂 Estrutura do Repositório
 Aqui está a estrutura de pastas do projeto, garantindo o alinhamento correto com o bloco de código:
-
+'''
 DATATHON/
 │
 ├── app/                        # Backend da Aplicação
@@ -50,7 +50,7 @@ DATATHON/
 │
 ├── .env                        # Variáveis de ambiente
 ├── render.yaml                  # Configuração de Deploy (Render)
-└── runtime.txt                  # Versão do Python utilizada
+└── runtime.txt                  # Versão do Python utilizada'''
 
 
 

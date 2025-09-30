@@ -49,10 +49,10 @@ MODEL_FILE = "modelo_match_xgboost.pkl"
 ENCODER_FILE = "encoder_le.pkl"
 
 # Colunas para o embedding e IDs
-# 🚨 CANDIDATO ID: Mantendo o nome 'id_candidato' conforme o erro, mas corrigindo o separador para carregar a coluna.
 CV_TEXT_COL = 'curriculo_pt' 
 VAGA_ID_COL = 'id' 
-CANDIDATO_ID_COL = 'id_candidato' 
+# Nome da coluna de ID do candidato, baseado no seu header CSV original.
+CANDIDATO_ID_COL = 'id' 
 
 # Coluna para o texto combinado da vaga (Criada em load_data)
 VAGA_TEXT_COL = 'vaga_text' 
@@ -184,17 +184,21 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
             raise FileNotFoundError(f"Arquivo não encontrado: s3://{candidatos_s3_path}")
         
         with fs.open(candidatos_s3_path, 'rb') as f:
-            # 🎯 AJUSTE DO DELIMITADOR: Passando sep=';' para lidar com arquivos no formato brasileiro/regional
-            # Se o delimitador for outra coisa (ex: vírgula, mas com problemas de aspas), o 'sep=',' resolve. 
-            # Mas o ';' é o mais comum nesses casos.
-            cdf = pd.read_csv(f, nrows=_max_rows, encoding='latin-1', sep=';') 
+            # 🚨 CORREÇÃO FINAL: Usando o engine Python, mais robusto para CSVs mal-formatados ou com aspas complexas.
+            cdf = pd.read_csv(
+                f, 
+                nrows=_max_rows, 
+                encoding='latin-1', 
+                engine='python',  # Engine Python
+                on_bad_lines='skip' # Tenta ignorar linhas que causam o erro "tokenizing data"
+            ) 
         
         # 🎯 VALIDAÇÃO DAS COLUNAS ESSENCIAIS DOS CANDIDATOS
         required_candidato_cols = [CANDIDATO_ID_COL, CV_TEXT_COL]
         if not all(col in cdf.columns for col in required_candidato_cols):
              missing_cols = [col for col in required_candidato_cols if col not in cdf.columns]
              # Levanta um erro específico que reflete o problema
-             raise KeyError(f"O arquivo de candidatos não contém as colunas necessárias: {missing_cols}. Revise a variável CANDIDATO_ID_COL ou CV_TEXT_COL e o delimitador (sep=';' ou outro).")
+             raise KeyError(f"O arquivo de candidatos não contém as colunas necessárias: {missing_cols}. Revise a variável CANDIDATO_ID_COL ou CV_TEXT_COL.")
              
         # Limpeza básica dos dados
         cdf = cdf.dropna(subset=required_candidato_cols)
@@ -217,7 +221,7 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
             raise FileNotFoundError(f"Arquivo não encontrado: s3://{vagas_s3_path}")
         
         with fs.open(vagas_s3_path, 'rb') as f:
-            # Mantendo o padrão para vagas (assumindo que o delimitador padrão (,) funcionou para o arquivo de vagas)
+            # Mantendo o padrão para vagas
             vdf = pd.read_csv(f, encoding='latin-1')
         
         # VALIDAÇÃO DAS COLUNAS ESSENCIAIS
@@ -264,8 +268,9 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
         st.error("🚨 Crítico: Dados insuficientes para continuar.")
         st.info(f"""
         **Atenção aos Erros de Dados:**
-        1. **Separador (Delimiter):** A tentativa de correção usou **`sep=';'`** para o arquivo de candidatos. Se o problema persistir, pode ser que o delimitador seja outro, como `sep=','` (vírgula com aspas mal formatadas) ou `sep='|'` (pipe).
-        2. **Nome da Coluna:** A coluna ID do candidato é esperada como **'{CANDIDATO_ID_COL}'**. Se o delimitador foi corrigido e o erro persistir, o nome da coluna no arquivo CSV pode ser diferente (ex: 'id').
+        1. **Engine Python Ativado:** O motor de leitura Python foi ativado, junto com a opção de ignorar linhas mal-formatadas (`on_bad_lines='skip'`).
+        2. **Delimitador:** O delimitador está configurado corretamente como vírgula (`,`).
+        3. **Colunas ID:** O ID do candidato é esperado como **'{CANDIDATO_ID_COL}'** (apenas 'id') e o CV como **'{CV_TEXT_COL}'**.
         """)
         st.stop()
     
@@ -273,7 +278,6 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
 
 # ... O restante do código (get_or_create_embeddings, predict_match_and_rank, display_candidate_card, main) 
 # permanece o mesmo que na resposta anterior.
-# Ele se baseia nas funções de carregamento já ajustadas.
 @st.cache_data(show_spinner="Gerenciando cache de embeddings...")
 def get_or_create_embeddings(
     df: pd.DataFrame, 

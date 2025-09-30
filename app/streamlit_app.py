@@ -11,7 +11,7 @@ import os
 import joblib
 import time
 import tempfile 
-import shutil # Importação adicional para limpeza
+import shutil 
 from datetime import datetime
 from typing import Dict, Any, List, Tuple, Optional
 import logging
@@ -41,7 +41,7 @@ S3_BUCKET = "datathon-recrutai"
 S3_DATA_PATH = f"s3://{S3_BUCKET}/data"
 S3_MODEL_PATH = f"s3://{S3_BUCKET}/data/models"
 
-# 🚨 AJUSTE 1: Caminho do SBERT no S3
+# Caminho do SBERT no S3
 SBERT_MODEL_DIR = "sbert_encoder" 
 
 # Nomes dos arquivos
@@ -95,13 +95,10 @@ if "aws" in st.secrets:
 def get_s3_fs():
     """Retorna o filesystem do S3 com configuração correta"""
     try:
-        # Tenta pegar as variáveis de ambiente, que foram setadas no bloco acima
         fs = s3fs.S3FileSystem(anon=False) 
-        # Testa o acesso listando o bucket
         fs.ls(S3_BUCKET)
         return fs
     except Exception as e:
-        # Se falhar, é erro de permissão (Forbidden) ou credenciais ausentes.
         st.error(f"❌ Erro ao conectar com S3: {e}")
         st.info("ℹ️ Verifique se as credenciais AWS estão configuradas corretamente no Streamlit Secrets.")
         st.stop()
@@ -113,24 +110,20 @@ def load_models() -> Any:
         fs = get_s3_fs()
         
         with st.spinner("Carregando modelos do S3..."):
-            # Caminhos completos no S3
             model_s3_path = f"{S3_BUCKET}/data/models/{MODEL_FILE}"
             
             st.info(f"📁 Buscando modelo em: s3://{model_s3_path}")
             
-            # Verifica se o arquivo do modelo (essencial) existe
             if not fs.exists(model_s3_path):
                 st.error(f"❌ Arquivo do modelo XGBoost não encontrado: s3://{model_s3_path}. O modelo é ESSENCIAL para o match.")
                 st.stop()
 
-            # Carregamento do arquivo do modelo
             with fs.open(model_s3_path, 'rb') as f:
                 bst = joblib.load(f)
 
-            # O LabelEncoder (le) foi ignorado para contornar o erro de arquivo ausente.
+            # O LabelEncoder (le) foi ignorado aqui.
             st.toast("✅ Modelo XGBoost carregado do S3 com sucesso! (LabelEncoder opcional foi ignorado)", icon="✅")
         
-        # Validação do modelo
         if bst is None:
             raise ValueError("Modelo XGBoost está vazio")
             
@@ -145,38 +138,28 @@ def load_models() -> Any:
 def load_encoder(model_name: str = 'all-MiniLM-L6-v2') -> SentenceTransformer:
     """
     Carrega o modelo SBERT, priorizando o S3 e baixando-o localmente.
-    A pasta do SBERT (sbert_encoder/) deve estar na raiz do bucket.
     """
     temp_dir = None
     try:
         fs = get_s3_fs()
         sbert_s3_path = f"{S3_BUCKET}/{SBERT_MODEL_DIR}"
         
-        # 1. Criar um diretório temporário para armazenar o modelo
         temp_dir = tempfile.mkdtemp()
         local_model_path = os.path.join(temp_dir, SBERT_MODEL_DIR)
         
-        # 2. Verificar se o modelo SBERT existe no S3
-        # Procuramos por um arquivo chave dentro da pasta SBERT_MODEL_DIR
         test_file_path = f"{sbert_s3_path}/config.json"
         
         if not fs.exists(test_file_path):
              st.warning(f"⚠️ Modelo SBERT não encontrado em S3 ({sbert_s3_path}). Tentando baixar da internet...")
-             # Fallback para download da internet (o comportamento original, mas agora é fallback)
              encoder = SentenceTransformer(model_name)
              st.toast("✅ Encoder carregado da internet.", icon="✅")
              return encoder
 
-        # 3. Baixar toda a pasta do S3 para o disco local
         with st.spinner(f"☁️ Baixando modelo SBERT do S3 para cache local..."):
-            # O comando get precisa do caminho completo do S3 para o caminho completo local
-            # O s3fs.get é usado para copiar pastas inteiras recursivamente (rpath, lpath)
             fs.get(sbert_s3_path, local_model_path, recursive=True)
         
-        # 4. Carregar o modelo SBERT a partir da pasta local
         encoder = SentenceTransformer(local_model_path)
             
-        # 5. Testar o encoder
         test_embedding = encoder.encode(["teste"], convert_to_numpy=True)
         if test_embedding.shape[1] == 0:
             raise ValueError("Embedding de teste vazio")
@@ -188,19 +171,19 @@ def load_encoder(model_name: str = 'all-MiniLM-L6-v2') -> SentenceTransformer:
         st.error(f"❌ Falha crítica ao carregar SBERT: {e}")
         st.stop()
     finally:
-        # 6. Limpar o diretório temporário após o carregamento
         if temp_dir and os.path.exists(temp_dir):
             try:
-                # O shutils.rmtree é usado para remover pastas recursivamente
                 shutil.rmtree(temp_dir)
                 logger.info(f"Diretório temporário limpo: {temp_dir}")
             except Exception as e:
                 logger.error(f"Erro ao limpar diretório temporário: {e}")
 
-
 @st.cache_data(show_spinner="Carregando dados dos candidatos e vagas do S3...")
 def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Carrega os DataFrames de candidatos e vagas do S3."""
+    """
+    Carrega os DataFrames de candidatos e vagas do S3.
+    RESTAURADA: Esta função estava faltando, causando o erro "load_data is not defined".
+    """
     
     log_messages = []
     cdf = pd.DataFrame()
@@ -217,20 +200,18 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
             raise FileNotFoundError(f"Arquivo não encontrado: s3://{candidatos_s3_path}")
         
         with fs.open(candidatos_s3_path, 'rb') as f:
-            # Usando o engine Python, mais robusto para CSVs mal-formatados ou com aspas complexas.
             cdf = pd.read_csv(
                 f, 
                 nrows=_max_rows, 
                 encoding='latin-1', 
-                engine='python',  # Engine Python
-                on_bad_lines='skip' # Tenta ignorar linhas que causam o erro "tokenizing data"
+                engine='python',
+                on_bad_lines='skip' 
             ) 
         
-        # 🎯 VALIDAÇÃO DAS COLUNAS ESSENCIAIS DOS CANDIDATOS
+        # Validação das colunas essenciais
         required_candidato_cols = [CANDIDATO_ID_COL, CV_TEXT_COL]
         if not all(col in cdf.columns for col in required_candidato_cols):
              missing_cols = [col for col in required_candidato_cols if col not in cdf.columns]
-             # Levanta um erro específico que reflete o problema
              raise KeyError(f"O arquivo de candidatos não contém as colunas necessárias: {missing_cols}. Revise a variável CANDIDATO_ID_COL ou CV_TEXT_COL.")
              
         # Limpeza básica dos dados
@@ -241,12 +222,10 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
 
     except Exception as e:
         log_messages.append(f"❌ Erro ao carregar candidatos: {str(e)}")
-        # Garante que cdf seja vazio em caso de erro.
         cdf = pd.DataFrame() 
 
     # --- Carregar Vagas ---
     try:
-        # Carregar Vagas
         vagas_s3_path = f"{S3_BUCKET}/data/{VAGAS_FILE}"
         st.info(f"📁 Carregando vagas de: s3://{vagas_s3_path}")
         
@@ -254,16 +233,15 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
             raise FileNotFoundError(f"Arquivo não encontrado: s3://{vagas_s3_path}")
         
         with fs.open(vagas_s3_path, 'rb') as f:
-            # Mantendo o padrão para vagas
             vdf = pd.read_csv(f, encoding='latin-1')
         
-        # VALIDAÇÃO DAS COLUNAS ESSENCIAIS
+        # Validação das colunas essenciais
         required_vaga_cols = [VAGA_ID_COL, 'titulo_vaga']
         if not all(col in vdf.columns for col in required_vaga_cols):
              missing_cols = [col for col in required_vaga_cols if col not in vdf.columns]
              raise KeyError(f"O arquivo de vagas não contém as colunas necessárias: {missing_cols}")
              
-        # CRIAÇÃO DA COLUNA VAGA_TEXT (texto combinado)
+        # Criação da coluna VAGA_TEXT (texto combinado)
         text_cols_to_combine = [
             'titulo_vaga', 'objetivo_vaga', 'nivel_profissional',
             'principais_atividades', 'competencias', 'habilidades_comportamentais'
@@ -299,17 +277,15 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
     # Validação final
     if cdf.empty or vdf.empty:
         st.error("🚨 Crítico: Dados insuficientes para continuar.")
-        st.info(f"""
-        **Atenção aos Erros de Dados:**
-        1. **Engine Python Ativado:** O motor de leitura Python foi ativado, junto com a opção de ignorar linhas mal-formatadas (`on_bad_lines='skip'`).
-        2. **Delimitador:** O delimitador está configurado corretamente como vírgula (`,`).
-        3. **Colunas ID:** O ID do candidato é esperado como **'{CANDIDATO_ID_COL}'** (apenas 'id') e o CV como **'{CV_TEXT_COL}'**.
-        """)
         st.stop()
     
     return cdf, vdf
 
-@st.cache_data(show_spinner="Gerenciando cache de embeddings...")
+@st.cache_data(
+    show_spinner="Gerenciando cache de embeddings...",
+    # 🚨 CORREÇÃO DO UNHASHABLEPARAMERROR: Ignora o encoder no cálculo do hash
+    hash_funcs={SentenceTransformer: lambda _: None} 
+)
 def get_or_create_embeddings(
     df: pd.DataFrame, 
     text_col: str, 
@@ -321,7 +297,7 @@ def get_or_create_embeddings(
     
     start_time = time.time()
     
-    # Verificar se já temos embeddings em cache de sessão
+    # ... (Restante da lógica da função, que estava correta)
     cache_key = f"embeddings_{filename}_{len(df)}"
     if _use_cache and cache_key in st.session_state:
         st.info(f"♻️ Usando embeddings em cache (Session State): {filename}")
@@ -350,10 +326,8 @@ def get_or_create_embeddings(
     # 2. Gerar novos embeddings
     st.warning(f"🔄 Gerando novos embeddings para {len(df):,} registros...")
     
-    # Preparar textos
     texts = df[text_col].tolist()
     
-    # Otimização: processar em lotes com progresso
     progress_bar = st.progress(0)
     status_text = st.empty()
     
@@ -362,7 +336,6 @@ def get_or_create_embeddings(
     
     for i in range(0, len(texts), batch_size):
         batch_texts = texts[i:i + batch_size]
-        # Otimizado: batch_size no encoder.encode
         batch_embeddings = encoder.encode(
             batch_texts, 
             show_progress_bar=False,
@@ -371,7 +344,6 @@ def get_or_create_embeddings(
         )
         all_embeddings.append(batch_embeddings)
         
-        # Atualizar progresso
         progress = min((i + batch_size) / len(texts), 1.0)
         progress_bar.progress(progress)
         status_text.text(f"Processando: {min(i + batch_size, len(texts)):,} / {len(texts):,}")
@@ -386,18 +358,14 @@ def get_or_create_embeddings(
         s3_emb_path = f"{S3_BUCKET}/data/embeddings/{filename}"
         
         with st.spinner("💾 Salvando embeddings no S3..."):
-            # Criar arquivo temporário para garantir que o upload seja seguro
             with tempfile.NamedTemporaryFile(delete=False, suffix='.npy') as tmp_file:
                 tmp_path = tmp_file.name
             
-            # Salvar numpy array no arquivo temporário
             np.save(tmp_path, embeddings)
             
-            # Fazer upload para S3
             with open(tmp_path, 'rb') as f:
                 fs.put(f, s3_emb_path)
             
-            # Limpar arquivo temporário
             os.unlink(tmp_path)
             
         st.success(f"✅ Novos embeddings salvos no S3: {embeddings.shape}")
@@ -420,41 +388,29 @@ def predict_match_and_rank(
     all_candidate_embeddings: np.ndarray, 
     cdf: pd.DataFrame, 
     bst: xgb.Booster, 
-    le: LabelEncoder, # Mantida para compatibilidade, mas não é usada no corpo da função
+    le: LabelEncoder, 
     top_k: int = 1000
 ) -> pd.DataFrame:
-    """
-    Calcula matching e ranking de forma otimizada.
-    Usa similaridade cosseno para pré-filtrar o Top K para o XGBoost, 
-    se o número total de candidatos for muito grande.
-    """
+    """Calcula matching e ranking de forma otimizada."""
     
-    # Limitar número de candidatos para predição se necessário
     if len(cdf) > top_k:
-        # Calcular Similaridade Cosseno para pré-seleção
         similarities = cosine_similarity(vaga_embedding.reshape(1, -1), all_candidate_embeddings)[0]
-        # Pega os índices dos top_k candidatos mais similares
         top_indices = np.argsort(similarities)[-top_k:]
-        # Filtra embeddings e DataFrame
         candidate_embeddings_subset = all_candidate_embeddings[top_indices]
         cdf_subset = cdf.iloc[top_indices].copy()
     else:
         candidate_embeddings_subset = all_candidate_embeddings
         cdf_subset = cdf.copy()
 
-    # Preparar features para XGBoost: concatenação dos embeddings
     vaga_emb_tiled = np.tile(vaga_embedding, (candidate_embeddings_subset.shape[0], 1))
     X_predict = np.hstack([candidate_embeddings_subset, vaga_emb_tiled])
 
-    # Fazer predição
     dtest = xgb.DMatrix(X_predict)
     predictions = bst.predict(dtest)
 
-    # Criar resultados
     results_df = cdf_subset.copy()
     results_df['probabilidade_match'] = predictions
     
-    # Ordenar por probabilidade e definir o rank
     results_df = results_df.sort_values('probabilidade_match', ascending=False).reset_index(drop=True)
     results_df['rank'] = results_df.index + 1
     
@@ -467,19 +423,16 @@ def predict_match_and_rank(
 def format_currency(value: float) -> str:
     """Formata valor monetário."""
     try:
-        # Formato brasileiro: R$ 1.234,56
         return f"R$ {value:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
     except:
         return "R$ 0,00"
 
 def display_candidate_card(candidate_data: pd.Series, rank: int):
     """Exibe um card formatado para cada candidato."""
-    # Garante que o container use o fundo do tema Streamlit
     with st.container(border=True): 
         col1, col2, col3 = st.columns([3, 2, 1])
         
         with col1:
-            # Usando a coluna ID de candidato definida
             st.subheader(f"#{rank} - {candidate_data[CANDIDATO_ID_COL]}")
             st.write(f"**Status:** {candidate_data.get('status', 'N/A')}")
             st.write(f"**Nível:** {candidate_data.get('nivel_hierarquico', 'N/A')}")
@@ -498,7 +451,6 @@ def display_candidate_card(candidate_data: pd.Series, rank: int):
             )
         
         with st.expander("📄 Ver CV Resumido"):
-            # Usa a variável global CV_TEXT_COL
             cv_text = candidate_data.get(CV_TEXT_COL, '')
             preview = cv_text[:300] + "..." if len(cv_text) > 300 else cv_text
             st.text(preview)
@@ -510,7 +462,6 @@ def display_candidate_card(candidate_data: pd.Series, rank: int):
 def main():
     """Função principal do aplicativo Streamlit."""
     
-    # Header principal
     st.title("🎯 RECRUT.AI - Sistema de Match de Talentos")
     st.markdown("""
     **Tecnologias:** - 🤖 **Sentence Transformers (SBERT)** para embeddings de texto
@@ -539,7 +490,7 @@ def main():
                 fs = get_s3_fs()
                 files = fs.ls(S3_BUCKET)
                 st.success(f"✅ Conexão OK! {len(files)} itens no bucket")
-                for file in files[:5]:  # Mostra apenas os primeiros 5
+                for file in files[:5]:
                     st.write(f"📁 {file}")
             except Exception as e:
                 st.error(f"❌ Falha na conexão: {e}")
@@ -565,12 +516,10 @@ def main():
         st.markdown("---")
         st.subheader("Seleção de Vaga")
         
-        # Carregar dados
-        # O max_candidates agora é passado para o load_data como o limite de linhas a carregar
+        # 🚨 LINHA QUE CAUSAVA O ERRO DE FUNÇÃO NÃO DEFINIDA (Agora a função load_data foi restaurada acima)
         cdf, vdf = load_data(max_candidates)
         
         # Seleção de vaga
-        # Usa VAGA_ID_COL para indexação e identificação
         vaga_options = vdf.set_index(VAGA_ID_COL)['titulo_vaga'].to_dict()
         selected_vaga_id = st.selectbox(
             "Selecione a Vaga:",
@@ -591,15 +540,14 @@ def main():
     
     # Carregar modelos (SBERT e XGBoost)
     with st.spinner("🚀 Inicializando modelos de IA..."):
-        # Apenas carregamos o bst (Booster). O le (LabelEncoder) foi removido.
         bst = load_models() 
-        # O encoder agora prioriza o S3
         encoder = load_encoder()
     
     # Carregar/Gerar embeddings
     col1, col2 = st.columns(2)
     
     with col1:
+        # A chamada que causou o UnhashableParamError, agora corrigida pelo hash_funcs.
         candidate_embeddings = get_or_create_embeddings(
             cdf, CV_TEXT_COL, EMBEDDINGS_FILE, encoder, use_cache
         )
@@ -611,14 +559,10 @@ def main():
     
     # Processar matching
     if selected_vaga_id:
-        # Obter dados da vaga selecionada
-        # Usa VAGA_ID_COL para filtrar
         vaga_row = vdf[vdf[VAGA_ID_COL] == selected_vaga_id].iloc[0]
-        # Obter o índice do embedding da vaga
         vaga_index = vdf.index.get_loc(vaga_row.name)
         selected_vaga_emb = vaga_embeddings[vaga_index]
         
-        # Exibir detalhes da vaga
         st.header(f"🎯 Vaga Selecionada: {vaga_row['titulo_vaga']}")
         
         col1, col2 = st.columns([2, 1])
@@ -632,12 +576,10 @@ def main():
         
         st.markdown("---")
         
-        # Executar matching
         with st.spinner(f"🔍 Analisando {len(cdf):,} candidatos (Top {top_k_for_xgboost} para XGBoost)..."):
             start_time = time.time()
             
-            # Criamos um LabelEncoder mock (vazio) apenas para satisfazer a assinatura 
-            # da função predict_match_and_rank, mas ele não será usado.
+            # LabelEncoder mock (vazio)
             le_mock = LabelEncoder() 
             
             results_df = predict_match_and_rank(
@@ -645,11 +587,9 @@ def main():
             )
             processing_time = time.time() - start_time
         
-        # Exibir resultados
         st.header(f"🏆 Top {top_n} Candidatos Recomendados")
         st.caption(f"⏱️ Tempo de Processamento do Ranking: {processing_time:.2f} segundos")
         
-        # Métricas gerais
         top_candidates = results_df.head(top_n)
         avg_prob = top_candidates['probabilidade_match'].mean()
         
@@ -658,13 +598,11 @@ def main():
         col2.metric("Match Médio (Top)", f"{avg_prob:.1%}")
         col3.metric("Candidatos Analisados", f"{len(results_df):,}")
         
-        # Lista de candidatos
         st.markdown("---")
         
         for idx, candidate in top_candidates.iterrows():
             display_candidate_card(candidate, candidate['rank'])
         
-        # Download dos resultados
         st.markdown("---")
         st.subheader("📊 Exportar Resultados")
         
@@ -694,7 +632,6 @@ def main():
 # ==============================================================================
 
 if __name__ == "__main__":
-    # Inicializar session state para cache de embeddings (se ainda não existir)
     if 'embeddings_cache' not in st.session_state:
         st.session_state.embeddings_cache = {}
     

@@ -87,7 +87,7 @@ CANDIDATO_METADATA_COLS = [
 ]
 
 # NOVO: Limite de linhas a carregar na inicialização para evitar timeouts no Streamlit Cloud
-MAX_ROWS_INITIAL_LOAD = 10000 
+MAX_ROWS_INITIAL_LOAD = 10000
 # ---------------------------------------------
 # 🔎 Helpers de explicabilidade
 # ---------------------------------------------
@@ -727,257 +727,329 @@ def page_admin(cdf: pd.DataFrame, vdf: pd.DataFrame):
                         "escolaridade": escolaridade,
                         "area_atuacao": area_atuacao,
                         CV_TEXT_COL: cv_text,
+                        CANDIDATO_ID_COL: None # Será preenchido por add_new_data_point
                     }
-                    updated_cdf = add_new_data_point(cdf, new_data, CANDIDATO_ID_COL, CV_TEXT_COL, "cand")
+                    
+                    updated_cdf = add_new_data_point(cdf.drop(columns=[CV_TEXT_COL], errors='ignore'), new_data, CANDIDATO_ID_COL, CV_TEXT_COL, id_prefix="custom_cand")
+                    
                     if save_dataframe_to_s3(updated_cdf, CANDIDATOS_FILE):
-                        st.success(f"✅ Candidato '{nome}' adicionado e base atualizada no S3! Recarregando...")
+                        st.success(f"✅ Candidato '{nome}' adicionado e base de candidatos salva no S3! Recarregando...")
                         time.sleep(1)
                         st.rerun()
-
+                elif submitted:
+                    st.error("❌ Por favor, preencha o Nome e o Currículo para adicionar o candidato.")
+                    
         elif add_type == "Vaga":
             st.markdown("Preencha os dados da nova **Vaga**:")
             with st.form("new_vaga_form"):
                 titulo = st.text_input("Título da Vaga", key="new_vaga_titulo")
-                objetivo = st.text_area("**Objetivo/Descrição da Vaga (CRÍTICO para o Match!)**", height=200, key="new_vaga_obj")
+                objetivo = st.text_area("Objetivo/Descrição Resumida", height=100, key="new_vaga_obj")
+                atividades = st.text_area("Principais Atividades, Competências e Habilidades (CRÍTICO para o Match!)", height=250, key="new_vaga_ativ")
                 
-                col_vaga1, col_vaga2 = st.columns(2)
-                nivel = col_vaga1.text_input("Nível Profissional (Ex: Sênior, Pleno)", key="new_vaga_nivel")
-                competencias = col_vaga2.text_input("Competências/Skills (Separadas por vírgula)", key="new_vaga_comp")
-
                 submitted = st.form_submit_button("➕ Adicionar Nova Vaga e Recarregar")
-
-                if submitted and objetivo and titulo:
+                
+                if submitted and titulo and atividades:
                     new_data = {
                         "titulo_vaga": titulo,
                         "objetivo_vaga": objetivo,
-                        "nivel_profissional": nivel,
-                        "competencias": competencias,
+                        "principais_atividades": atividades,
+                        VAGA_TEXT_COL: f"{titulo} {objetivo} {atividades}",
+                        VAGA_ID_COL: None # Será preenchido por add_new_data_point
                     }
-                    # Combina as colunas para o VAGA_TEXT_COL
-                    text_combined = " ".join([str(new_data.get(c, '')) for c in ["titulo_vaga", "objetivo_vaga", "nivel_profissional", "competencias"]])
-                    new_data[VAGA_TEXT_COL] = text_combined
-
-                    updated_vdf = add_new_data_point(vdf, new_data, VAGA_ID_COL, VAGA_TEXT_COL, "vaga")
+                    
+                    # Cria um DF temporário com as colunas necessárias para a função add_new_data_point
+                    temp_vdf_cols = list(set(vdf.columns) | set(new_data.keys()))
+                    temp_vdf = vdf.reindex(columns=temp_vdf_cols).copy()
+                    
+                    updated_vdf = add_new_data_point(temp_vdf, new_data, VAGA_ID_COL, VAGA_TEXT_COL, id_prefix="custom_vaga")
+                    
                     if save_dataframe_to_s3(updated_vdf, VAGAS_FILE):
-                        st.success(f"✅ Vaga '{titulo}' adicionada e base atualizada no S3! Recarregando...")
+                        st.success(f"✅ Vaga '{titulo}' adicionada e base de vagas salva no S3! Recarregando...")
                         time.sleep(1)
                         st.rerun()
+                elif submitted:
+                    st.error("❌ Por favor, preencha o Título da Vaga e as Atividades/Habilidades para adicionar a vaga.")
 
-# --- PÁGINA DE DASHBOARD (Implementação Simplificada) ---
+
+# --- PÁGINA DE DASHBOARD (Visualização) ---
 def page_dashboard(cdf: pd.DataFrame, vdf: pd.DataFrame):
-    """Página de painel com estatísticas básicas."""
-    st.header("📊 Painel de Dados")
+    """Página de visualização geral dos dados."""
+    st.header("📊 Dashboard de Dados")
+    st.markdown("Visão geral sobre a base de **Candidatos** e **Vagas** carregadas.")
 
-    col1, col2 = st.columns(2)
+    if cdf.empty or vdf.empty:
+        st.warning("⚠️ Dados de Candidatos ou Vagas não carregados. Verifique o Status de Carregamento na barra lateral.")
+        return
+
+    # -----------------------------------------------------
+    # ESTATÍSTICAS GERAIS
+    # -----------------------------------------------------
+    st.subheader("Estatísticas Chave")
+    col1, col2, col3, col4 = st.columns(4)
+
     col1.metric("Total de Candidatos", f"{len(cdf):,}")
     col2.metric("Total de Vagas", f"{len(vdf):,}")
-
-    if not cdf.empty and "area_atuacao" in cdf.columns:
-        st.subheader("Distribuição de Candidatos por Área de Atuação")
-        area_counts = cdf["area_atuacao"].value_counts().head(10)
-        fig = px.bar(area_counts, x=area_counts.index, y=area_counts.values,
-                     labels={'x': 'Área de Atuação', 'y': 'Contagem de Candidatos'},
-                     title="Top 10 Áreas de Atuação")
-        st.plotly_chart(fig, use_container_width=True)
-
-    if not cdf.empty and CV_TEXT_COL in cdf.columns:
-        st.subheader("Word Cloud dos Currículos")
-        # Concatena uma amostra de texto para o WordCloud (para performance)
-        text = " ".join(cdf[CV_TEXT_COL].sample(min(1000, len(cdf)), random_state=42).astype(str).tolist())
-        if text:
-            wordcloud = WordCloud(width=800, height=400, background_color="white").generate(text)
-            st.image(wordcloud.to_array(), use_column_width=True)
+    
+    if "area_atuacao" in cdf.columns:
+        col3.metric("Áreas de Atuação (Candidatos)", f"{cdf['area_atuacao'].nunique():,} únicas")
+    if "cidade" in vdf.columns:
+        col4.metric("Cidades com Vagas", f"{vdf['cidade'].nunique():,} únicas")
 
 
-# --- PÁGINA DE MATCHING (Inclui a Correção Defensiva de Busca) ---
+    # -----------------------------------------------------
+    # CANDIDATOS: Distribuição por Escolaridade
+    # -----------------------------------------------------
+    st.markdown("---")
+    st.subheader("Distribuição dos Candidatos")
+    
+    col_c1, col_c2 = st.columns(2)
+
+    if "escolaridade" in cdf.columns:
+        escolaridade_counts = cdf["escolaridade"].value_counts().reset_index()
+        escolaridade_counts.columns = ["Escolaridade", "Contagem"]
+        
+        fig_esc = px.bar(
+            escolaridade_counts,
+            x="Escolaridade",
+            y="Contagem",
+            title="Escolaridade dos Candidatos",
+            color="Contagem",
+            color_continuous_scale=px.colors.sequential.Plotly3,
+        )
+        fig_esc.update_layout(xaxis_title="", yaxis_title="")
+        col_c1.plotly_chart(fig_esc, use_container_width=True)
+
+    # -----------------------------------------------------
+    # CANDIDATOS: Nuvem de Palavras (Áreas/Skills)
+    # -----------------------------------------------------
+    if CV_TEXT_COL in cdf.columns:
+        text = " ".join(cdf[CV_TEXT_COL].dropna().astype(str).sample(min(1000, len(cdf))).tolist())
+        
+        # Cria a nuvem de palavras
+        wordcloud = WordCloud(
+            width=800, 
+            height=400, 
+            background_color="white", 
+            max_words=100,
+            stopwords=set(["de", "e", "a", "o", "que", "do", "da", "em", "um", "uma", "para", "com", "os", "as", "você", "se", "no", "na"])
+        ).generate(text)
+        
+        # Converte para imagem e exibe
+        fig_wc = px.imshow(wordcloud.to_array(), title="Nuvem de Palavras nos Currículos (Amostra)")
+        fig_wc.update_layout(xaxis_visible=False, yaxis_visible=False, coloraxis_showscale=False)
+        col_c2.plotly_chart(fig_wc, use_container_width=True)
+
+    # -----------------------------------------------------
+    # VAGAS: Distribuição por Área (Título)
+    # -----------------------------------------------------
+    st.markdown("---")
+    st.subheader("Distribuição das Vagas")
+
+    col_v1, col_v2 = st.columns(2)
+    
+    if "titulo_vaga" in vdf.columns:
+        # Simplifica títulos para áreas principais (ex: 'Analista de Dados Senior' -> 'Analista de Dados')
+        vdf['titulo_limpo'] = vdf['titulo_vaga'].astype(str).str.split().str[:2].str.join(' ')
+        area_counts = vdf['titulo_limpo'].value_counts().nlargest(15).reset_index()
+        area_counts.columns = ["Título Simplificado", "Contagem"]
+        
+        fig_area = px.bar(
+            area_counts,
+            x="Contagem",
+            y="Título Simplificado",
+            orientation='h',
+            title="Top 15 Títulos de Vaga Simplificados",
+            color="Contagem",
+            color_continuous_scale=px.colors.sequential.Viridis,
+        )
+        fig_area.update_layout(yaxis={'categoryorder':'total ascending'}, xaxis_title="", yaxis_title="")
+        col_v1.plotly_chart(fig_area, use_container_width=True)
+
+    # -----------------------------------------------------
+    # VAGAS: Distribuição por Local (Estado/Região)
+    # -----------------------------------------------------
+    if "estado" in vdf.columns:
+        location_counts = vdf["estado"].value_counts().nlargest(10).reset_index()
+        location_counts.columns = ["Estado", "Contagem"]
+
+        fig_loc = px.pie(
+            location_counts,
+            names="Estado",
+            values="Contagem",
+            title="Distribuição Top 10 Estados (Vagas)",
+        )
+        col_v2.plotly_chart(fig_loc, use_container_width=True)
+
+# --- PÁGINA DE MATCHING ---
 def page_matching(cdf: pd.DataFrame, vdf: pd.DataFrame, encoder: SentenceTransformer, bst: Any):
     """Página principal de match crítico."""
-    st.header("🎯 Match Crítico: Vaga -> Candidatos")
-
-    # 1. SIDEBAR DE CONFIGURAÇÃO DE DADOS
-    with st.sidebar:
-        st.subheader("Configuração de Dados")
-        
-        # Checkbox para carregar todos os dados (CRÍTICO para o RERUN)
-        # O estado da checkbox é lido no main() para definir max_rows.
-        st.checkbox(
-            "Carregar Base Completa (42k+)", 
-            value=st.session_state.get('load_full_data', False), 
-            key='load_full_data',
-            help=f"Desmarcado: carrega apenas os primeiros {MAX_ROWS_INITIAL_LOAD:,} candidatos. Marcado: carrega todos (pode demorar)."
-        )
-
-        st.info(f"Candidatos carregados: {len(cdf):,}")
-        st.info(f"Vagas carregadas: {len(vdf):,}")
-        st.info(f"Modelo: XGBoost")
-        model_info = getattr(encoder, 'model_name_or_path', None)
-        if model_info is None and hasattr(encoder, 'tokenizer') and hasattr(encoder.tokenizer, 'name_or_path'):
-            model_info = encoder.tokenizer.name_or_path
-        
-        st.info(f"Embeddings: {model_info or 'all-MiniLM-L6-v2'}")
-
-
-    # 2. SELEÇÃO DA VAGA (Vaga deve ter ID limpo devido à correção em load_data)
-    vdf['vaga_display'] = vdf['titulo_vaga'].astype(str) + " - (ID:" + vdf[VAGA_ID_COL].astype(str) + ")"
-    vaga_options = vdf['vaga_display'].tolist()
     
+    # Adiciona checagem defensiva de objetos críticos
+    if cdf.empty or vdf.empty or encoder is None or bst is None:
+        st.error("🚨 Dados ou Modelos não carregados. Verifique o 'Status de Carregamento' e recarregue a aplicação.")
+        return
+
+    st.header("🎯 Match Crítico: Vaga -> Candidatos")
+    st.info(f"Modelo de Embeddings: **all-MiniLM-L6-v2**") # CORREÇÃO: Usando o nome fixo para evitar AttributeError
+    
+    # 1. Seleção da Vaga
+    vagas_display = [f"ID:{r[VAGA_ID_COL]}) - {r['titulo_vaga']}" for _, r in vdf.iterrows()]
+    vagas_display.insert(0, "-- Selecione uma Vaga --")
     selected_vaga_display = st.selectbox(
-        "Selecione a Vaga para Encontrar Candidatos:",
-        options=vaga_options,
-        index=0
+        "Selecione uma Vaga da Base de Dados:",
+        options=vagas_display,
+        index=0,
+        key="vaga_select"
     )
 
-    # Extrai o ID da vaga (esperado: "ID:1234") e remove espaços
-    match = re.search(r'ID:(\S+)', selected_vaga_display)
+    if selected_vaga_display == "-- Selecione uma Vaga --":
+        st.info("Aguardando seleção de vaga para iniciar o matching.")
+        return
+
+    # 2. Extração do ID da Vaga Selecionada
+    
+    # CORREÇÃO CRÍTICA DO ERRO '7057)':
+    # A regex agora captura tudo que vem após 'ID:' e antes de ')'.
+    # Isso garante que o ID numérico seja extraído corretamente, eliminando o parênteses final.
+    match = re.search(r'ID:([^)]+)\)', selected_vaga_display)
     if not match:
-        st.error("Não foi possível extrair o ID da vaga selecionada.")
+        st.error(f"Não foi possível extrair o ID da vaga selecionada. Formato esperado: ID:XXX) - Título")
         return
         
     vaga_id_match = match.group(1).strip()
     
-    # CRÍTICO: Filtra a vaga e verifica se existe no DataFrame
-    # 🚨 CORREÇÃO DEFENSIVA: Garante a comparação de strings limpas
+    # 3. Busca da Vaga no DataFrame
+    # Note: O ID no DF (VAGA_ID_COL) foi limpo e é uma string (load_data)
     vdf_filtered = vdf[vdf[VAGA_ID_COL].astype(str).str.strip() == vaga_id_match]
 
     if vdf_filtered.empty:
         st.error(f"A vaga com ID '{vaga_id_match}' não foi encontrada na base de dados de vagas carregada. Recarregue os dados ou selecione outra vaga.")
         return
-        
-    # Se chegamos aqui, sabemos que há pelo menos 1 linha
+
     vaga_row = vdf_filtered.iloc[0]
+    vaga_index = vaga_row.name # Indice original no vdf
+
+    st.subheader(f"Vaga Selecionada: {vaga_row.get('titulo_vaga', 'N/A')}")
+    st.markdown(f"**ID:** {vaga_id_match} | **Objetivo:** {safe_display(vaga_row.get('objetivo_vaga', 'N/A'))}")
+    st.caption(f"Texto para Matching: {vaga_row[VAGA_TEXT_COL][:200]}...")
+
+
+    # 4. Gerenciamento e Carregamento dos Embeddings
+    with st.spinner("Preparando embeddings (Candidatos e Vaga)..."):
+        # Carrega/cria embeddings dos candidatos
+        c_emb = get_or_create_embeddings(cdf, CV_TEXT_COL, EMBEDDINGS_FILE, encoder)
+        
+        # Carrega/cria embeddings das vagas
+        v_emb_all = get_or_create_embeddings(vdf, VAGA_TEXT_COL, VAGAS_EMBEDDINGS_FILE, encoder)
+        
+        if vaga_index >= len(v_emb_all):
+            st.error("Erro: O índice da vaga selecionada não corresponde ao array de embeddings de vagas. Tente recarregar os dados.")
+            return
+
+        vaga_embedding = v_emb_all[vaga_index]
+        
+        if c_emb.size == 0 or vaga_embedding.size == 0:
+            st.error("Embeddings não disponíveis. Não é possível calcular o match.")
+            return
+
+    # 5. Cálculo do Match e Ranking
+    top_k_candidates = st.sidebar.slider("Quantos candidatos ranquear?", 10, 500, 100)
     
-    st.markdown(f"**Título da Vaga:** {vaga_row.get('titulo_vaga', 'N/A')}")
-    st.markdown(f"**Descrição:** {vaga_row.get('objetivo_vaga', 'N/A')}")
-
-
-    # 3. CARREGAMENTO DOS EMBEDDINGS
-    try:
-        # Embeddings de Candidatos
-        cand_embeddings = get_or_create_embeddings(
-            cdf, CV_TEXT_COL, EMBEDDINGS_FILE, encoder
+    with st.spinner(f"Calculando Match (XGBoost) para Top {top_k_candidates} candidatos..."):
+        results_df = predict_match_and_rank(
+            vaga_embedding,
+            c_emb,
+            cdf,
+            bst,
+            top_k=top_k_candidates
         )
-        # Embeddings de Vagas
-        vaga_embeddings_matrix = get_or_create_embeddings(
-            vdf, VAGA_TEXT_COL, VAGAS_EMBEDDINGS_FILE, encoder
-        )
-    except Exception as e:
-        st.error(f"❌ Erro ao carregar/criar Embeddings: {e}")
+    
+    st.markdown("---")
+    
+    if results_df.empty:
+        st.warning("Nenhum candidato encontrado no Top K para esta vaga.")
         return
 
-    # 4. EXECUTAR MATCH
-    # Encontra o índice da vaga para obter o embedding
-    vaga_idx = vdf_filtered.index[0] 
-    vaga_embedding = vaga_embeddings_matrix[vaga_idx]
+    # 6. Exibição do Ranking
+    st.subheader(f"🏆 Top {len(results_df)} Candidatos para a Vaga")
     
-    st.subheader("Candidatos Mais Promissores (Ranking por Match Predito)")
-
-    with st.spinner("🚀 Calculando Match (XGBoost) e Rank..."):
-        # Executa a predição (ranking Potencial)
-        ranked_candidates_df = predict_match_and_rank(
-            vaga_embedding, 
-            cand_embeddings, 
-            cdf, 
-            bst, 
-            top_k=5000 # Busca nos top 5000 por similaridade, ranqueia todos.
-        )
-
-    if ranked_candidates_df.empty:
-        st.warning("Nenhum candidato encontrado. Verifique a base de dados de candidatos.")
-        return
-
-    # 5. EXIBIÇÃO DO RANKING
+    # Slider para visualizar os top N
+    n_display = st.slider("Mostrar Top N Candidatos:", 5, min(100, len(results_df)), 10)
     
-    # Filtro de Rank
-    top_n = st.slider("Mostrar Top N Candidatos:", min_value=10, max_value=min(200, len(ranked_candidates_df)), value=50, step=10)
-    display_df = ranked_candidates_df.head(top_n)
-
-    # Exibe os cartões
-    for index, row in display_df.iterrows():
-        display_candidate_card(row, row['rank'], vaga_row, vaga_embedding, encoder)
-
-
-# --- PÁGINA DE DASHBOARD (Placeholder) ---
-# A função page_dashboard já foi definida acima.
-
+    for rank, (idx, row) in enumerate(results_df.head(n_display).iterrows(), 1):
+        display_candidate_card(row, rank, vaga_row, vaga_embedding, encoder)
+        
 
 # ==============================================================================
 # 8. FUNÇÃO PRINCIPAL
 # ==============================================================================
 
 def main():
-    """Função principal que carrega dados, modelos e gerencia a navegação."""
+    st.sidebar.image("logo.png", use_column_width=True)
+    st.sidebar.title("Navegação")
     
-    # Configurações de navegação na sidebar
-    with st.sidebar:
-        st.header("Navegação")
-        page = st.radio(
-            "Ir para:",
-            options=["Match Crítico", "Painel de Dados", "Admin (Upload/Insert)"],
-            index=0,
-            key='app_page'
-        )
-
-    # 1. CARREGAMENTO DE DADOS E MODELOS
-    # O valor inicial do limite de linhas é ajustado pelo estado da checkbox no Match Crítico
-    # Garante que o estado seja inicializado (útil para o primeiro run)
-    if 'load_full_data' not in st.session_state:
-        st.session_state['load_full_data'] = False
-        
-    max_rows = None if st.session_state.get('load_full_data', False) else MAX_ROWS_INITIAL_LOAD
+    # 1. Carregamento de Dados (usa um limite inicial para maior velocidade)
+    # Se MAX_ROWS_INITIAL_LOAD > 0, carrega só um subconjunto de candidatos.
+    # O usuário poderá carregar a base completa no Admin.
+    cdf, vdf, log_messages = load_data(MAX_ROWS_INITIAL_LOAD)
     
-    # 🚨 CRÍTICO: Invalida o cache de dados se o estado da checkbox mudar
-    # Apenas para a demo, onde o Streamlit não invalida caches com argumentos diferentes de sessão
-    if 'last_max_rows_load' not in st.session_state or st.session_state['last_max_rows_load'] != max_rows:
-        st.cache_data.clear()
-        st.session_state['last_max_rows_load'] = max_rows
-        st.session_state['load_data_ran'] = False # Força o load_data a rodar
-        
-    try:
-        # Tenta carregar dados com o limite definido
-        cdf, vdf, log_messages = load_data(_max_rows=max_rows)
-        
-        # Exibe logs de carregamento na sidebar
-        with st.sidebar:
-            data_loaded_ok = display_load_logs(log_messages)
-            if not data_loaded_ok and page != "Admin (Upload/Insert)":
-                st.error("🚨 Dados Críticos Ausentes. Verifique a seção Admin.")
-                # Se os dados estiverem vazios, não tentamos carregar modelos.
-                if cdf.empty and vdf.empty:
-                    st.stop() # Parar a execução se os dados estiverem vazios
+    # 2. Carregamento de Modelos
+    bst = None
+    encoder = None
+    encoder_le = None
+    
+    data_loaded_ok = display_load_logs(log_messages)
 
-        # Carrega Modelos (apenas se os DataFrames não estiverem vazios)
-        bst = None
-        encoder = None
-        if not cdf.empty and not vdf.empty:
+    if data_loaded_ok and not cdf.empty and not vdf.empty:
+        try:
             bst = load_models()
             encoder = load_encoder()
-        elif page != "Admin (Upload/Insert)":
-             st.error("🚨 Dados necessários para Match/Painel não carregados. Vá para 'Admin'.")
-             if cdf.empty or vdf.empty:
-                 return # Não precisa parar, mas evita tentar rodar as outras páginas
-
-    except RuntimeError as e:
-        st.error(f"❌ Erro Crítico de Inicialização: {e}. Verifique as credenciais AWS na seção Secrets.")
-        st.stop()
-    except Exception as e:
-        st.error(f"❌ Erro Inesperado de Inicialização: {e}")
-        st.stop()
-    
-    # 2. ROTEAMENTO DE PÁGINAS
-    
-    if page == "Match Crítico":
-        if bst is not None and encoder is not None:
-              page_matching(cdf, vdf, encoder, bst)
-        else:
-            st.error("Aguardando carregamento dos modelos ou dados...")
-            if cdf.empty or vdf.empty:
-                 st.info("Por favor, acesse a página 'Admin (Upload/Insert)' para carregar a base de dados.")
-
-    elif page == "Painel de Dados":
-        page_dashboard(cdf, vdf)
+            st.sidebar.success("✅ Modelos carregados com sucesso.")
+        except Exception as e:
+            st.sidebar.error(f"❌ Erro ao carregar modelos: {e}")
+    else:
+        st.sidebar.warning("⚠️ Carregamento de dados falhou ou resultou em bases vazias.")
         
-    elif page == "Admin (Upload/Insert)":
+    # 3. Definição da Página
+    
+    if cdf.empty or vdf.empty or bst is None or encoder is None:
+        # Força para a página Admin se os dados essenciais não carregarem
+        page = st.sidebar.radio(
+            "Selecione a Página (Acesso restrito)", 
+            ["🛠️ Administração", "📊 Dashboard"], 
+            index=0,
+        )
+    else:
+        # Páginas normais
+        page = st.sidebar.radio(
+            "Selecione a Página", 
+            ["🎯 Match Crítico", "📊 Dashboard", "🛠️ Administração"], 
+            index=0,
+        )
+
+    # 4. Renderização da Página
+    if page == "🎯 Match Crítico":
+        page_matching(cdf, vdf, encoder, bst)
+    elif page == "📊 Dashboard":
+        page_dashboard(cdf, vdf)
+    elif page == "🛠️ Administração":
         page_admin(cdf, vdf)
+    
+    st.sidebar.markdown("---")
+    st.sidebar.caption(f"Última atualização: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
 
 if __name__ == "__main__":
+    # Garante que a imagem do logo exista para evitar erro
+    if not os.path.exists("logo.png"):
+        try:
+            # Cria uma imagem placeholder para Streamlit Cloud (caso não tenha sido upada)
+            from PIL import Image, ImageDraw, ImageFont
+            img = Image.new('RGB', (100, 100), color = (7, 54, 66))
+            d = ImageDraw.Draw(img)
+            d.text((10,10), "LOGO", fill=(255, 255, 255))
+            img.save("logo.png")
+        except:
+             pass # Falha silenciosa se PIL não estiver instalado
+             
     main()

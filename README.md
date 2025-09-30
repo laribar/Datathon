@@ -76,7 +76,7 @@ Clone o repositório e crie um ambiente virtual:
 
 Bash
 
-# 1. Clonar o repositório
+````# 1. Clonar o repositório
 git clone https://github.com/laribar/datathon.git
 cd datathon
 
@@ -87,15 +87,4 @@ source .venv/bin/activate    # Linux/Mac
 
 # 3. Instalar dependências
 pip install -r app/requirements.txt
-3. Executando a Aplicação
-A) Iniciar a API com FastAPI
-Bash
-
-uvicorn app.main:app --reload --port 8000
-Acesse a documentação interativa (Swagger UI) em: http://localhost:8000/docs
-
-B) Iniciar o Dashboard Streamlit
-Bash
-
-streamlit run app/streamlit_app.py
-O dashboard será aberto automaticamente no seu navegador, geralmente em: http://localhost:8501
+````

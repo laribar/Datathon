@@ -50,8 +50,8 @@ DATATHON/
 │
 ├── .env                        # Variáveis de ambiente
 ├── render.yaml                  # Configuração de Deploy (Render)
-└── runtime.txt                  # Versão do Python utilizada´´´
-
+└── runtime.txt                  # Versão do Python utilizada
+```
 
 
 ⚙️ Fluxo de Trabalho (Pipeline ML)

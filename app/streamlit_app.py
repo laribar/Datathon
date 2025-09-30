@@ -856,6 +856,8 @@ def page_dashboard(cdf: pd.DataFrame, vdf: pd.DataFrame):
 
 
 # --- PÁGINA DE MATCH CRÍTICO ---
+# ==============================================================================
+# --- PÁGINA DE MATCH CRÍTICO ---
 def page_matching(cdf: pd.DataFrame, vdf: pd.DataFrame, encoder: SentenceTransformer, bst: Any):
     """Página principal de match e ranking."""
     
@@ -939,6 +941,10 @@ def page_matching(cdf: pd.DataFrame, vdf: pd.DataFrame, encoder: SentenceTransfo
     # Criar um label amigável: Título - ID
     vaga_options = vdf.apply(lambda row: f"{row['titulo_vaga']} (ID:{row[VAGA_ID_COL]})", axis=1).tolist()
     
+    if not vaga_options:
+        st.error("Nenhuma vaga disponível para seleção. Verifique o carregamento de dados.")
+        return
+
     selected_vaga_label = st.selectbox(
         "Selecione uma Vaga:",
         options=vaga_options,
@@ -946,10 +952,33 @@ def page_matching(cdf: pd.DataFrame, vdf: pd.DataFrame, encoder: SentenceTransfo
     )
 
     # Extrair o ID
-    vaga_id_match = selected_vaga_label.split('(ID:')[-1].replace(')', '').strip()
-    vaga_row = vdf[vdf[VAGA_ID_COL] == vaga_id_match].iloc[0]
-    vaga_index = vdf[vdf[VAGA_ID_COL] == vaga_id_match].index[0]
-    vaga_embedding = vdf_embeddings[vaga_index]
+    try:
+        # Pega a parte após "(ID:" e remove o ")"
+        vaga_id_match = selected_vaga_label.split('(ID:')[-1].replace(')', '').strip()
+    except:
+        st.error("Falha ao extrair ID da vaga. Selecione outra vaga ou verifique o formato.")
+        return
+        
+    # CRÍTICO: Filtra e verifica se a vaga existe no DataFrame
+    vdf_filtered = vdf[vdf[VAGA_ID_COL] == vaga_id_match]
+
+    if vdf_filtered.empty:
+        st.error(f"A vaga com ID '{vaga_id_match}' não foi encontrada na base de dados de vagas carregada. Recarregue os dados ou selecione outra vaga.")
+        return
+        
+    # Se chegamos aqui, sabemos que há pelo menos 1 linha
+    vaga_row = vdf_filtered.iloc[0]
+    vaga_index = vdf_filtered.index[0] # Pega o índice original da vaga
+    
+    # Se os embeddings foram gerados antes do filtro, precisamos encontrar o índice correto no array
+    try:
+        # Localiza o índice da vaga no DataFrame COMPLETO (vdf) para obter o embedding
+        vaga_original_index = vdf[vdf[VAGA_ID_COL] == vaga_id_match].index[0]
+        vaga_embedding = vdf_embeddings[vaga_original_index]
+    except IndexError:
+        st.error("Falha ao localizar o embedding da vaga. Verifique a consistência dos embeddings e dados.")
+        return
+
 
     st.subheader(f"Vaga Selecionada: {vaga_row['titulo_vaga']}")
     st.caption(f"ID: {vaga_id_match}")

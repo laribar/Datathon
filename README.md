@@ -59,7 +59,7 @@ Etapa	Ferramentas	Descrição
 1. Coleta/Processamento	Pandas, utils/	Conversão de JSON para CSVs limpos (applicants_clean.csv, vagas_clean.csv) e padronização.
 2. Modelagem Semântica	SBERT, notebooks/	Geração de embeddings (vetores numéricos) dos CVs e Vagas.
 3. Treinamento	XGBoost, Scikit-learn	Treinamento do classificador de Match usando os embeddings como features.
-4. Deploy e Serviço	Streamlit, FastAPI, AWS S3	O Streamlit serve o dashboard, o FastAPI provê a API, e ambos carregam os modelos do S3.
+4. Deploy e Serviço	Streamlit, AWS S3	O Streamlit serve o dashboard.
 
 Exportar para Sheets
 💻 Como Executar o Projeto Localmente

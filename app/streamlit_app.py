@@ -20,7 +20,7 @@ import s3fs
 import joblib
 from sentence_transformers import SentenceTransformer
 from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics.pairwise import cosine_similarity  # (mantido p/ compat.)
+from sklearn.metrics.pairwise import cosine_similarity
 import warnings
 
 warnings.filterwarnings("ignore")
@@ -53,7 +53,7 @@ VAGAS_FILE = "vagas_clean.csv"
 EMBEDDINGS_FILE = "candidatos.npy"
 VAGAS_EMBEDDINGS_FILE = "vagas.npy"
 MODEL_FILE = "modelo_match_xgboost.pkl"
-ENCODER_FILE = "encoder_le.pkl"  # (não utilizado diretamente aqui)
+ENCODER_FILE = "encoder_le.pkl"
 
 # Colunas para o embedding e IDs
 CV_TEXT_COL = "curriculo_pt"
@@ -178,6 +178,7 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
     """
     Carrega os DataFrames de candidatos e vagas do S3.
     Retorna os DataFrames e uma lista de logs/mensagens para exibição na UI.
+    CORREÇÃO: Inclui reset_index(drop=True) para garantir índice posicional para .iloc.
     """
     log_messages: List[str] = []
     cdf = pd.DataFrame()
@@ -208,6 +209,9 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
 
         cdf = cdf.dropna(subset=required_candidato_cols)
         cdf[CV_TEXT_COL] = cdf[CV_TEXT_COL].astype(str)
+        
+        # 🟢 CORREÇÃO CRÍTICA: Garante índice posicional contínuo
+        cdf = cdf.reset_index(drop=True) 
 
         log_messages.append(f"✅ Candidatos carregados: {len(cdf):,} registros")
 
@@ -247,6 +251,9 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
             raise ValueError(f"Nenhuma coluna base encontrada para criar '{VAGA_TEXT_COL}'.")
 
         vdf = vdf.dropna(subset=[VAGA_TEXT_COL, VAGA_ID_COL])
+        
+        # 🟢 CORREÇÃO: Garante índice posicional contínuo
+        vdf = vdf.reset_index(drop=True)
 
         log_messages.append(f"✅ Vagas carregadas: {len(vdf):,} registros")
 
@@ -261,7 +268,7 @@ def load_data(_max_rows: Optional[int] = None) -> Tuple[pd.DataFrame, pd.DataFra
 
 @st.cache_data(
     show_spinner="Gerenciando cache de embeddings...",
-    hash_funcs={SentenceTransformer: lambda _: None},  # evita UnhashableParam
+    hash_funcs={SentenceTransformer: lambda _: None}, 
 )
 def get_or_create_embeddings(
     df: pd.DataFrame,
@@ -278,7 +285,7 @@ def get_or_create_embeddings(
     - gravação/ leitura em S3
     """
     if df.empty:
-        return np.zeros((0, 384), dtype="float32")  # dimensão padrão MiniLM
+        return np.zeros((0, 384), dtype="float32")
 
     content_hash = _hash_df(df, [text_col], sample_rows=20000)
     cache_key = f"emb_{filename}_{content_hash}"
@@ -325,13 +332,13 @@ def get_or_create_embeddings(
     progress_bar.empty()
     status_text.empty()
 
-    # 3) Salvar no S3 (corrigido: fs.put espera PATH local, não file-like)
+    # 3) Salvar no S3
     try:
         with st.spinner("💾 Salvando embeddings no S3..."):
             with tempfile.NamedTemporaryFile(delete=False, suffix=".npy") as tmp:
                 np.save(tmp.name, embeddings)
                 tmp_path = tmp.name
-            fs.put(tmp_path, s3_emb_path)  # ✅ correto
+            fs.put(tmp_path, s3_emb_path)
             os.unlink(tmp_path)
     except Exception as e:
         logger.warning(f"Falha ao salvar embeddings no S3 ({filename}): {e}")
@@ -356,13 +363,20 @@ def predict_match_and_rank(
     CORREÇÃO: Garante a forma de entrada (1536 features) esperada pelo modelo bst.
     """
     if cdf.empty or all_candidate_embeddings.size == 0:
+        # Retorna DataFrame vazio se não houver dados
         return pd.DataFrame()
 
     # 1. Pré-filtragem de candidatos (otimização por similaridade)
     # similaridade por produto interno (assumindo normalização L2 prévia)
     sims = all_candidate_embeddings @ vaga_embedding.astype("float32")
     k = min(top_k, len(sims))
+    
+    # 🚨 NOTA: Garantia que k seja > 0 para evitar erro se sims for vazio (embora o if acima cubra)
+    if k == 0:
+        return pd.DataFrame()
+        
     top_idx = np.argpartition(sims, -k)[-k:]
+    # Ordenação decrescente no subset
     top_idx = top_idx[np.argsort(-sims[top_idx])] 
 
     # 2. Construção da Matriz de Predição (X_predict)
@@ -373,15 +387,12 @@ def predict_match_and_rank(
     # Concatenação Simples (768 features)
     X_predict_768 = np.hstack([X_left, X_right]).astype(np.float32, copy=False)
 
-    # 🚨 CORREÇÃO ESSENCIAL: Duplicar as features para 1536 (768 + 768)
-    # Isso alinha a entrada de predição com a estrutura de treinamento do seu modelo.
+    # 🟢 CORREÇÃO CRÍTICA: Duplicar as features para 1536 (768 + 768)
     X_predict = np.hstack([X_predict_768, X_predict_768]).astype(np.float32, copy=False)
     
     # 3. Predição compatível com Booster OU sklearn
     predictions: np.ndarray
     try:
-        # 🚨 Verificação de segurança: Removida para manter a função limpa, mas o fluxo de erro abaixo cobre.
-        
         if isinstance(bst, xgb.Booster):
             dtest = xgb.DMatrix(X_predict)
             predictions = bst.predict(dtest)
@@ -403,6 +414,7 @@ def predict_match_and_rank(
         return pd.DataFrame()
 
     # 4. Formatação e Ranking
+    # ✅ CORREÇÃO GARANTIDA: O cdf agora tem índice alinhado ao top_idx
     results_df = cdf.iloc[top_idx].copy()
     results_df["probabilidade_match"] = predictions.astype(np.float32, copy=False)
     results_df = results_df.sort_values("probabilidade_match", ascending=False).reset_index(drop=True)
@@ -416,6 +428,7 @@ def predict_match_and_rank(
 
 def format_currency(value: float) -> str:
     try:
+        # Formato brasileiro R$ X.XXX,XX
         return f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     except Exception:
         return "R$ 0,00"
@@ -465,11 +478,11 @@ def main():
     st.title("🎯 RECRUT.AI - Sistema de Match de Talentos")
     st.markdown(
         """
-    **Tecnologias:**  
-    - 🤖 **Sentence Transformers (SBERT)** para embeddings de texto  
-    - 🌳 **XGBoost** para classificação de matching  
-    - ☁️ **AWS S3** para armazenamento e cache  
-    - ⚡ Otimizações de cache e performance  
+    **Tecnologias:**  
+    - 🤖 **Sentence Transformers (SBERT)** para embeddings de texto  
+    - 🌳 **XGBoost** para classificação de matching  
+    - ☁️ **AWS S3** para armazenamento e cache  
+    - ⚡ Otimizações de cache e performance  
     """
     )
 
@@ -565,21 +578,29 @@ def main():
     with col1:
         st.subheader("Embeddings de Candidatos")
         candidate_embeddings = get_or_create_embeddings(cdf, CV_TEXT_COL, EMBEDDINGS_FILE, encoder, use_cache)
-        if use_cache:
-            st.success(f"✅ Embeddings Candidatos: {candidate_embeddings.shape} (cache/gerado)")
+        content_hash_c = _hash_df(cdf, [CV_TEXT_COL], sample_rows=20000)
+        cache_key_c = f"emb_{EMBEDDINGS_FILE}_{content_hash_c}"
+        if use_cache and cache_key_c in st.session_state:
+             st.success(f"✅ Embeddings Candidatos: {candidate_embeddings.shape} (Cache)")
+        else:
+             st.warning(f"🔄 Embeddings Candidatos gerados: {candidate_embeddings.shape} (Novo cálculo)")
 
     with col2:
         st.subheader("Embeddings de Vagas")
         vaga_embeddings = get_or_create_embeddings(vdf, VAGA_TEXT_COL, VAGAS_EMBEDDINGS_FILE, encoder, use_cache)
-        if use_cache:
-            st.success(f"✅ Embeddings Vagas: {vaga_embeddings.shape} (cache/gerado)")
+        content_hash_v = _hash_df(vdf, [VAGA_TEXT_COL], sample_rows=20000)
+        cache_key_v = f"emb_{VAGAS_EMBEDDINGS_FILE}_{content_hash_v}"
+        if use_cache and cache_key_v in st.session_state:
+             st.success(f"✅ Embeddings Vagas: {vaga_embeddings.shape} (Cache)")
+        else:
+             st.warning(f"🔄 Embeddings Vagas gerados: {vaga_embeddings.shape} (Novo cálculo)")
 
     st.markdown("---")
 
     # --- Processar Matching ---
     if selected_vaga_id:
         vaga_row = vdf[vdf[VAGA_ID_COL] == selected_vaga_id].iloc[0]
-        vaga_index = vdf.index.get_loc(vaga_row.name)
+        vaga_index = vdf[vdf[VAGA_ID_COL] == selected_vaga_id].index[0] # Usa índice resetado para achar a posição no array
         selected_vaga_emb = vaga_embeddings[vaga_index]
 
         st.header(f"🎯 Vaga Selecionada: {vaga_row['titulo_vaga']}")
@@ -588,7 +609,7 @@ def main():
 
         with st.spinner(f"🔍 Analisando {len(cdf):,} candidatos (Top {top_k_for_xgboost} para XGBoost)..."):
             start_time = time.time()
-            le_mock = LabelEncoder()  # mantido p/ compat.
+            le_mock = LabelEncoder()
             results_df = predict_match_and_rank(
                 selected_vaga_emb, candidate_embeddings, cdf, bst, le_mock, top_k=top_k_for_xgboost
             )
@@ -658,7 +679,6 @@ def main():
                     mime="application/octet-stream",
                 )
         except Exception as e:
-            # Parquet é opcional; se faltar pyarrow/fastparquet, apenas oculta
             logger.warning(f"Parquet indisponível: {e}")
 
 # ==============================================================================

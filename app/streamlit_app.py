@@ -340,44 +340,66 @@ def get_or_create_embeddings(
     return embeddings
 
 # ==============================================================================
-# 4. FUNÇÕES DE PREDIÇÃO
+# 4. FUNÇÕES DE PREDIÇÃO (VERSÃO CORRIGIDA)
 # ==============================================================================
 
 def predict_match_and_rank(
     vaga_embedding: np.ndarray,
     all_candidate_embeddings: np.ndarray,
     cdf: pd.DataFrame,
-    bst: xgb.Booster,
-    le: LabelEncoder,  # mantido p/ compatibilidade, não usado
+    bst: Any,  # pode ser xgb.Booster ou XGBClassifier
+    le: Any = None,  # mantido por compatibilidade; não é usado
     top_k: int = 1000,
 ) -> pd.DataFrame:
     """
     Calcula matching e ranking de forma otimizada.
     Pressupõe embeddings L2-normalizados (cosine -> produto interno).
+    Compatível com modelos xgb.Booster (API nativa) e XGBClassifier (sklearn).
     """
     if cdf.empty or all_candidate_embeddings.size == 0:
         return pd.DataFrame()
 
-    # produto interno = similaridade cosseno (com normalização L2 prévia)
+    # similaridade por produto interno (com normalização L2 prévia)
     sims = all_candidate_embeddings @ vaga_embedding.astype("float32")
-    # pega top_k sem ordenar tudo
     k = min(top_k, len(sims))
     top_idx = np.argpartition(sims, -k)[-k:]
-    # ordena desc nos top_k
-    top_idx = top_idx[np.argsort(-sims[top_idx])]
+    top_idx = top_idx[np.argsort(-sims[top_idx])]  # ordenação desc apenas no top_k
 
-    # evita np.tile: usa broadcast para concatenar (cand | vaga)
     X_left = all_candidate_embeddings[top_idx]
     X_right = np.broadcast_to(vaga_embedding, X_left.shape)
-    X_predict = np.hstack([X_left, X_right]).astype("float32")
+    X_predict = np.hstack([X_left, X_right]).astype(np.float32, copy=False)
 
-    dtest = xgb.DMatrix(X_predict)
-    predictions = bst.predict(dtest)
+    # --- Predição compatível com Booster OU sklearn ---
+    predictions: np.ndarray
+    try:
+        # Caso seja Booster (API nativa do XGBoost)
+        if isinstance(bst, xgb.Booster):
+            dtest = xgb.DMatrix(X_predict)
+            predictions = bst.predict(dtest)
+
+        # Caso seja sklearn.XGBClassifier ou similar
+        else:
+            # Priorize probabilidade da classe positiva se disponível
+            if hasattr(bst, "predict_proba"):
+                proba = bst.predict_proba(X_predict)
+                if proba.ndim == 2 and proba.shape[1] > 1:
+                    predictions = proba[:, 1]
+                else:
+                    predictions = proba.ravel()
+            else:
+                # fallback: usar predict (pode retornar rótulo ou score dependendo do treino)
+                pred = bst.predict(X_predict)
+                predictions = pred.astype(np.float32, copy=False) if isinstance(pred, np.ndarray) else np.array(pred, dtype=np.float32)
+
+    except Exception as e:
+        # Se algo der errado, deixe traço claro na interface
+        st.error(f"Erro ao gerar predições com o modelo XGBoost: {e}")
+        return pd.DataFrame()
 
     results_df = cdf.iloc[top_idx].copy()
-    results_df["probabilidade_match"] = predictions
+    results_df["probabilidade_match"] = predictions.astype(np.float32, copy=False)
     results_df = results_df.sort_values("probabilidade_match", ascending=False).reset_index(drop=True)
-    results_df["rank"] = results_df.index + 1
+    results_df["rank"] = np.arange(1, len(results_df) + 1, dtype=int)
     return results_df
 
 # ==============================================================================

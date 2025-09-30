@@ -641,6 +641,16 @@ def display_load_logs(log_messages: List[str]) -> bool:
 # ==============================================================================
 # 7. FUNÇÕES DE PÁGINAS (PAINEL, ADMIN E MATCHING)
 # ==============================================================================
+import streamlit as st
+import pandas as pd
+import numpy as np
+import time
+
+# Assumindo que estas constantes e funções auxiliares (que não estão no prompt, mas são necessárias)
+# CANDIDATO_ID_COL, VAGA_ID_COL, CV_TEXT_COL, VAGA_TEXT_COL, EMBEDDINGS_FILE,
+# load_data, save_dataframe_to_s3, add_new_data_point, display_load_logs,
+# get_or_create_embeddings, predict_match_and_rank, display_candidate_card, _hash_df
+# estão definidas no escopo global ou em outro arquivo importado.
 
 # --- PÁGINA DE ADMIN ---
 def page_admin(cdf: pd.DataFrame, vdf: pd.DataFrame):
@@ -778,8 +788,8 @@ def page_dashboard(cdf: pd.DataFrame, vdf: pd.DataFrame):
             title_df.columns = ["Título da Vaga", "Contagem"]
             st.bar_chart(title_df, x="Título da Vaga", y="Contagem")
         else:
-             st.caption("Dados de vagas indisponíveis.")
-             
+            st.caption("Dados de vagas indisponíveis.")
+            
     st.markdown("---")
     
     st.subheader("Distribuição Geográfica de Candidatos (Top 10 Estados)")
@@ -790,16 +800,21 @@ def page_dashboard(cdf: pd.DataFrame, vdf: pd.DataFrame):
             state_counts.columns = ["Estado", "Candidatos"]
             st.dataframe(state_counts, use_container_width=True)
         else:
-             st.caption("Dados geográficos insuficientes ou não-Brasil.")
+            st.caption("Dados geográficos insuficientes ou não-Brasil.")
 
-# --- PÁGINA DE MATCHING DE VAGAS CRÍTICAS (NOVO) ---
+# --- PÁGINA DE MATCHING DE VAGAS CRÍTICAS (NOVO COM PAGINAÇÃO) ---
 def page_critical_match(cdf, vdf, encoder, bst):
-    """Filtra vagas críticas e busca o top candidato (foco em potencial)."""
+    """Filtra vagas críticas e busca o top candidato (foco em potencial) com paginação eficiente."""
     
     st.title("🥇 Match de Vagas Críticas (Potencial de Aderência)")
     st.markdown("Selecione uma vaga para ver os candidatos com maior potencial de aderência.")
     
-    # Adicionando um placeholder para os embeddings completos (se necessário)
+    # Inicializa o estado da página se não existir
+    if 'current_match_page' not in st.session_state:
+        st.session_state['current_match_page'] = 1
+    if 'match_results_per_page' not in st.session_state:
+        st.session_state['match_results_per_page'] = 10
+        
     full_cdf = cdf
     full_cdf_embeddings = None
 
@@ -807,25 +822,20 @@ def page_critical_match(cdf, vdf, encoder, bst):
     with st.sidebar:
         st.header("⚙️ Configurações de Match")
         
-        # Carrega a base completa se o usuário pedir (opcional, para evitar timeout)
-        load_full_data = st.checkbox("Carregar Base Completa (> 10k candidatos)", value=False)
+        # Otimização: Carregar a base completa (42k)
+        load_full_data = st.checkbox("Carregar Base Completa (> 10k candidatos)", value=False, key="load_full_data_checkbox")
         
         if load_full_data:
-            # Força o recarregamento dos dados completos (chamada não cacheada)
-            st.info("Carregando toda a base...")
-            full_cdf, _, log_messages_full = load_data(_max_rows=None)
-            
-            if not display_load_logs(log_messages_full):
-                 st.error("Falha ao carregar a base completa.")
+            with st.spinner("Carregando toda a base..."):
+                 # Carrega a base completa (chamada sem limite de rows)
+                full_cdf, _, log_messages_full = load_data(_max_rows=None)
             
             st.success(f"Base completa carregada com {len(full_cdf):,} candidatos.")
             
-    # Usa a base completa se carregada, senão a inicial
     match_cdf = full_cdf if load_full_data else cdf
 
     # 1. Obter Embeddings dos Candidatos (Cache)
     with st.spinner("Preparando embeddings de candidatos..."):
-        # Se carregou a base completa, força a recriação (ou carregamento) dos embeddings completos
         full_cdf_embeddings = get_or_create_embeddings(
             match_cdf,
             CV_TEXT_COL,
@@ -840,28 +850,35 @@ def page_critical_match(cdf, vdf, encoder, bst):
         return
 
     # Opções de vagas
-    vaga_options = vdf["titulo_vaga"].tolist()
-    
-    # Combina título e ID para exibição/seleção
     vaga_map = {f"{row['titulo_vaga']} (ID: {row[VAGA_ID_COL]})": row[VAGA_ID_COL] for _, row in vdf.iterrows()}
     vaga_display_options = list(vaga_map.keys())
     
+    # CRÍTICO: Usamos st.session_state para armazenar a vaga selecionada
+    if 'selected_vaga_display' not in st.session_state:
+        st.session_state['selected_vaga_display'] = vaga_display_options[0] if vaga_display_options else None
+        
     selected_vaga_display = st.selectbox(
         "Selecione uma Vaga",
-        vaga_display_options
+        vaga_display_options,
+        key="vaga_selector_key" # Garante que o estado seja salvo
     )
     
     if not selected_vaga_display:
         st.info("Selecione uma vaga para iniciar o match.")
         return
 
+    # Se a vaga mudou, reseta a página para 1
+    if st.session_state.vaga_selector_key != st.session_state.get('last_vaga_selector_key_state', selected_vaga_display):
+         st.session_state['current_match_page'] = 1
+    
+    st.session_state['last_vaga_selector_key_state'] = selected_vaga_display # Atualiza o estado da vaga
+
     selected_vaga_id = vaga_map[selected_vaga_display]
     vaga_row = vdf[vdf[VAGA_ID_COL] == selected_vaga_id].iloc[0]
     vaga_text = vaga_row[VAGA_TEXT_COL]
     
-    # 3. Gerar Embedding da Vaga (em tempo de execução)
+    # 3. Gerar Embedding da Vaga
     with st.spinner("Calculando embedding da vaga..."):
-        # Garante que o embedding da vaga seja float32 e tem dimensão (1, 384)
         vaga_embedding_384 = encoder.encode([vaga_text], convert_to_numpy=True).astype("float32").reshape(-1)
 
     st.markdown(f"#### Vaga Selecionada: **{vaga_row['titulo_vaga']}**")
@@ -869,26 +886,90 @@ def page_critical_match(cdf, vdf, encoder, bst):
     
     # 4. Predição e Ranking
     if not match_cdf.empty and full_cdf_embeddings.size > 0:
-        with st.spinner(f"Rodando match ML para {len(match_cdf):,} candidatos..."):
-            
-            top_k_for_ml = st.sidebar.slider("Candidatos para Pré-Filtragem (Top K)", min_value=100, max_value=min(10000, len(match_cdf)), value=min(2000, len(match_cdf)), step=100)
-            
-            results_df = predict_match_and_rank(
-                vaga_embedding_384,
-                full_cdf_embeddings,
-                match_cdf,
-                bst,
-                top_k=top_k_for_ml
-            )
         
+        # --- CONFIGURAÇÕES DE RANKING NA SIDEBAR ---
+        with st.sidebar:
+            top_k_for_ml = st.slider(
+                "Candidatos para Pré-Filtragem (Top K)", 
+                min_value=100, 
+                max_value=min(10000, len(match_cdf)), 
+                value=min(2000, len(match_cdf)), 
+                step=100, 
+                key="top_k_slider"
+            )
+            
+            st.session_state['match_results_per_page'] = st.number_input(
+                "Resultados por Página", 
+                min_value=5, 
+                max_value=100, 
+                value=st.session_state.match_results_per_page, 
+                step=5,
+                key="results_per_page_input"
+            )
+
+        # Usamos st.cache_data para cachear o resultado do RANKING e evitar recálculo desnecessário
+        # O hash depende do ID da vaga e do hash dos embeddings dos candidatos
+        @st.cache_data(show_spinner="Rodando match ML e Ranking...", ttl=3600)
+        def run_prediction_and_rank(vaga_id, vaga_emb, cdf_hash, c_emb, bst_model, top_k):
+            return predict_match_and_rank(
+                vaga_emb,
+                c_emb,
+                match_cdf,
+                bst_model,
+                top_k=top_k
+            )
+
+        # Gerar o hash dos candidatos para o cache (garantindo que se o cdf mudar, o cache invalida)
+        match_cdf_hash = _hash_df(match_cdf, [CANDIDATO_ID_COL, CV_TEXT_COL], sample_rows=20000)
+        
+        results_df = run_prediction_and_rank(
+            selected_vaga_id,
+            vaga_embedding_384,
+            match_cdf_hash,
+            full_cdf_embeddings,
+            bst,
+            top_k_for_ml
+        )
+
         if not results_df.empty:
-            num_display = st.sidebar.number_input("Mostrar Top N Candidatos", min_value=5, max_value=100, value=10)
+            
+            total_results = len(results_df)
+            results_per_page = st.session_state.match_results_per_page
+            total_pages = int(np.ceil(total_results / results_per_page))
+            
+            # Garante que a página atual seja válida
+            if st.session_state.current_match_page > total_pages:
+                st.session_state.current_match_page = 1
+            
+            # --- LÓGICA DE PAGINAÇÃO ---
+            col_prev, col_info, col_next = st.columns([1, 2, 1])
+
+            if col_prev.button("⬅️ Anterior", disabled=(st.session_state.current_match_page <= 1)):
+                st.session_state.current_match_page -= 1
+                st.rerun()
+
+            if col_next.button("Próxima ➡️", disabled=(st.session_state.current_match_page >= total_pages)):
+                st.session_state.current_match_page += 1
+                st.rerun()
+                
+            start_index = (st.session_state.current_match_page - 1) * results_per_page
+            end_index = start_index + results_per_page
+            
+            # Fatiamento do DataFrame para exibir APENAS a página atual
+            results_to_display = results_df.iloc[start_index:end_index]
+            
+            col_info.markdown(
+                f"**Exibindo {start_index + 1} a {min(end_index, total_results)} (Total: {total_results})** | **Página {st.session_state.current_match_page} de {total_pages}**", 
+                unsafe_allow_html=True, 
+                help="A navegação é instantânea porque o cálculo já foi feito e está em cache."
+            )
             
             st.markdown("---")
-            st.subheader(f"Resultado: Top {min(num_display, len(results_df))} Candidatos com Maior Potencial de Match")
+            st.subheader(f"Resultado: Top {total_results} Candidatos com Maior Potencial de Match")
             
             # 5. Exibição
-            for index, row in results_df.head(num_display).iterrows():
+            for index, row in results_to_display.iterrows():
+                # O rank é o índice original no DataFrame ranqueado + 1
                 display_candidate_card(row, index + 1, vaga_row, vaga_embedding_384, encoder)
         else:
             st.warning("⚠️ Não foi possível gerar o ranking de candidatos.")

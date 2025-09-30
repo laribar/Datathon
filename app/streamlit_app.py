@@ -9,6 +9,7 @@ import json
 import shutil
 import tempfile
 import logging
+import html  # <--- 🟢 ADICIONE ESTA LINHA AQUI
 from datetime import datetime
 from typing import Any, List, Tuple, Optional
 
@@ -139,12 +140,10 @@ def top_relevant_sentences(
     top_idx = top_idx[np.argsort(-scores[top_idx])]
     return [sents[i] for i in top_idx]
 
-def render_badges(items: List[str]) -> str:
-    """Gera HTML simples de 'badges' (usa unsafe_allow_html=True no st.markdown)."""
-    if not items: 
-        return "<span style='opacity:.7'>Sem correspondências</span>"
-    return " ".join([f"<span style='display:inline-block;padding:2px 8px;border-radius:999px;background:#1f6feb20;border:1px solid #1f6feb55;margin:2px 6px 2px 0;font-size:12px'>{st._escape_html(i)}</span>" for i in items[:12]])
-
+def render_badges(items: list) -> str:
+    """Renders a list of items as a series of stylized HTML badges."""
+    # Note: Ensure the 'html' module is imported (Step 1)
+    return " ".join([f"<span style='display:inline-block;padding:2px 8px;border-radius:999px;background:#1f6feb20;border:1px solid #1f6feb55;margin:2px 6px 2px 0;font-size:12px'>{html.escape(i)}</span>" for i in items[:12]])
 # --- 🎯 INJEÇÃO DE SECRETS DO STREAMLIT CLOUD ---
 if "aws" in st.secrets:
     try:

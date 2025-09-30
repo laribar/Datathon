@@ -1130,11 +1130,13 @@ def main():
         return
 
     # 3. Seleção de Página
-    PAGES = {
-        "🥇 Match de Vagas Críticas": lambda: page_critical_match(cdf, vdf, encoder, bst),
-        "📊 Painel de Estatísticas": lambda: page_dashboard(cdf, vdf),
-        "🛠️ Administração de Dados": lambda: page_admin(cdf, vdf),
-    }
+PAGES = {
+    "🥇 Match de Vagas Críticas": lambda: page_critical_match(cdf, vdf, encoder, bst),
+    # DE: "📊 Painel de Estatísticas de Dados": lambda: page_dashboard(cdf, vdf), 
+    # PARA:
+    "📈 Painel de Estatísticas de Dados": lambda: page_data_panel(cdf, vdf), 
+    "🛠️ Admin (Upload/Insert)": lambda: page_admin(cdf, vdf),
+}
 
     selection = st.sidebar.radio("Navegação", list(PAGES.keys()))
     

@@ -16,21 +16,21 @@ Arquitetura	all-MiniLM-L6-v2
 Função	Converte o texto integral dos CVs e das vagas em vetores numéricos de 384 dimensões (embeddings). Esta codificação captura o significado contextual das sentenças.
 Benefício	Permite que o sistema entenda a intenção e o contexto, encontrando match mesmo quando termos diferentes são usados (ex: "Conhecimento em AWS" e "Experiência com Amazon Web Services").
 
-Export to Sheets
+
 2. 🏆 Classificação Avançada (Machine Learning)
 Detalhe	Informação
 Modelo	XGBoost (eXtreme Gradient Boosting)
 Função	Atua como um Classificador Robusto. Ele recebe a concatenação dos vetores semânticos (Candidato + Vaga) e prevê a Probabilidade de Match (uma pontuação de 0 a 1).
 Benefício	Gera um ranking final de candidatos ordenado por sua compatibilidade predita, garantindo alta precisão na pré-seleção.
 
-Export to Sheets
+
 ⚙️ Pilares de Infraestrutura e Implementação
 Pilar	Tecnologia/Ferramenta	Descrição
 Interface de Usuário	Streamlit	Dashboard interativo e ágil para a equipe de RH, com visualização de ranking e painéis de dados.
 Infraestrutura Cloud	AWS S3	Armazenamento persistente e seguro de modelos ML e datasets grandes.
 Modelo em Produção	Render / FastAPI	Utilizado para hospedar o modelo e API (FastAPI) de predição, permitindo baixa latência e integração futura com sistemas de terceiros.
 
-Export to Sheets
+
 🔗 Acesso ao Aplicativo
 O dashboard interativo do RECRUT.AI está publicado e pode ser acessado no link abaixo.
 

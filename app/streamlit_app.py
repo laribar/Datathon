@@ -743,7 +743,7 @@ def page_admin(cdf: pd.DataFrame, vdf: pd.DataFrame):
 
 # --- PÁGINA DE DASHBOARD (Visualização) ---
 def page_dashboard(cdf: pd.DataFrame, vdf: pd.DataFrame):
-    """Página de visualização geral dos dados."""
+    """Página de visualização geral dos dados (Otimizada)."""
     st.header("📊 Dashboard de Dados")
     st.markdown("Visão geral sobre a base de **Candidatos** e **Vagas** carregadas.")
 
@@ -752,7 +752,7 @@ def page_dashboard(cdf: pd.DataFrame, vdf: pd.DataFrame):
         return
 
     # -----------------------------------------------------
-    # ESTATÍSTICAS GERAIS
+    # ESTATÍSTICAS GERAIS (MÉTRICAS)
     # -----------------------------------------------------
     st.subheader("Estatísticas Chave")
     col1, col2, col3, col4 = st.columns(4)
@@ -760,92 +760,127 @@ def page_dashboard(cdf: pd.DataFrame, vdf: pd.DataFrame):
     col1.metric("Total de Candidatos", f"{len(cdf):,}")
     col2.metric("Total de Vagas", f"{len(vdf):,}")
     
-    if "area_atuacao" in cdf.columns:
-        col3.metric("Áreas de Atuação (Candidatos)", f"{cdf['area_atuacao'].nunique():,} únicas")
-    if "cidade" in vdf.columns:
-        col4.metric("Cidades com Vagas", f"{vdf['cidade'].nunique():,} únicas")
+    unique_areas = cdf.get("area_atuacao", pd.Series()).nunique()
+    col3.metric("Áreas de Atuação (Candidatos)", f"{unique_areas:,} únicas" if unique_areas > 0 else "N/A")
+    
+    unique_cities = vdf.get("cidade", pd.Series()).nunique()
+    col4.metric("Cidades com Vagas", f"{unique_cities:,} únicas" if unique_cities > 0 else "N/A")
 
 
     # -----------------------------------------------------
-    # CANDIDATOS: Distribuição por Escolaridade
+    # CANDIDATOS: ANÁLISE DEMOGRÁFICA E DE CARREIRA
     # -----------------------------------------------------
     st.markdown("---")
-    st.subheader("Distribuição dos Candidatos")
+    st.subheader("Análise dos Candidatos")
     
-    col_c1, col_c2 = st.columns(2)
+    with st.expander("Distribuição Demográfica e de Carreira", expanded=True):
+        col_c1, col_c2 = st.columns(2)
+    
+        # Gráfico 1: Escolaridade (Col C1)
+        if "escolaridade" in cdf.columns and not cdf["escolaridade"].isna().all():
+            escolaridade_counts = cdf["escolaridade"].value_counts().nlargest(10).reset_index()
+            escolaridade_counts.columns = ["Escolaridade", "Contagem"]
+            
+            fig_esc = px.bar(
+                escolaridade_counts,
+                x="Contagem",
+                y="Escolaridade",
+                orientation='h',
+                title="Top 10 Escolaridades dos Candidatos",
+                color="Contagem",
+                color_continuous_scale=px.colors.sequential.Plotly3,
+            )
+            fig_esc.update_layout(yaxis={'categoryorder':'total ascending'}, xaxis_title="", yaxis_title="")
+            col_c1.plotly_chart(fig_esc, use_container_width=True)
+        else:
+            col_c1.info("Dados de escolaridade indisponíveis ou incompletos.")
 
-    if "escolaridade" in cdf.columns:
-        escolaridade_counts = cdf["escolaridade"].value_counts().reset_index()
-        escolaridade_counts.columns = ["Escolaridade", "Contagem"]
-        
-        fig_esc = px.bar(
-            escolaridade_counts,
-            x="Escolaridade",
-            y="Contagem",
-            title="Escolaridade dos Candidatos",
-            color="Contagem",
-            color_continuous_scale=px.colors.sequential.Plotly3,
-        )
-        fig_esc.update_layout(xaxis_title="", yaxis_title="")
-        col_c1.plotly_chart(fig_esc, use_container_width=True)
+        # Gráfico 2: Gênero e Idade (Col C2)
+        if "genero" in cdf.columns and not cdf["genero"].isna().all():
+            gender_counts = cdf["genero"].value_counts().nlargest(5).reset_index()
+            gender_counts.columns = ["Gênero", "Contagem"]
+            
+            fig_gen = px.pie(
+                gender_counts,
+                names="Gênero",
+                values="Contagem",
+                title="Distribuição por Gênero",
+                hole=.3,
+                color_discrete_sequence=px.colors.sequential.RdBu,
+            )
+            col_c2.plotly_chart(fig_gen, use_container_width=True)
+        else:
+            col_c2.info("Dados de gênero indisponíveis.")
+            
+        # Gráfico 3: Nuvem de Palavras (Expandida)
+        if CV_TEXT_COL in cdf.columns and not cdf[CV_TEXT_COL].isna().all():
+            with st.expander("Nuvem de Palavras nos Currículos (Skills e Termos)"):
+                # Amostra de um número maior para melhor qualidade da WordCloud
+                text = " ".join(cdf[CV_TEXT_COL].dropna().astype(str).sample(min(3000, len(cdf))).tolist())
+                
+                wordcloud = WordCloud(
+                    width=1000, # Aumentei a resolução base
+                    height=500, 
+                    background_color="#262730", # Fundo escuro para Streamlit
+                    max_words=150,
+                    colormap="RdBu", # Esquema de cores mais legível
+                    stopwords=set(["de", "e", "a", "o", "que", "do", "da", "em", "um", "uma", "para", "com", "os", "as", "você", "se", "no", "na", "por", "meu", "minha", "ele", "ela", "ser", "ter", "ao", "aos", "pela", "pelo", "mais"])
+                ).generate(text)
+                
+                # Usando Matplotlib para renderizar a imagem diretamente
+                import matplotlib.pyplot as plt
+                fig, ax = plt.subplots(figsize=(10, 5))
+                ax.imshow(wordcloud, interpolation='bilinear')
+                ax.axis("off")
+                st.pyplot(fig, use_container_width=True)
+        else:
+            st.info("Texto de currículo indisponível para gerar nuvem de palavras.")
+
 
     # -----------------------------------------------------
-    # CANDIDATOS: Nuvem de Palavras (Áreas/Skills)
-    # -----------------------------------------------------
-    if CV_TEXT_COL in cdf.columns:
-        text = " ".join(cdf[CV_TEXT_COL].dropna().astype(str).sample(min(1000, len(cdf))).tolist())
-        
-        wordcloud = WordCloud(
-            width=800, 
-            height=400, 
-            background_color="white", 
-            max_words=100,
-            stopwords=set(["de", "e", "a", "o", "que", "do", "da", "em", "um", "uma", "para", "com", "os", "as", "você", "se", "no", "na"])
-        ).generate(text)
-        
-        fig_wc = px.imshow(wordcloud.to_array(), title="Nuvem de Palavras nos Currículos (Amostra)")
-        fig_wc.update_layout(xaxis_visible=False, yaxis_visible=False, coloraxis_showscale=False)
-        col_c2.plotly_chart(fig_wc, use_container_width=True)
-
-    # -----------------------------------------------------
-    # VAGAS: Distribuição por Área (Título)
+    # VAGAS: ANÁLISE DE MERCADO
     # -----------------------------------------------------
     st.markdown("---")
-    st.subheader("Distribuição das Vagas")
+    st.subheader("Análise das Vagas Publicadas")
 
-    col_v1, col_v2 = st.columns(2)
-    
-    if "titulo_vaga" in vdf.columns:
-        vdf['titulo_limpo'] = vdf['titulo_vaga'].astype(str).str.split().str[:2].str.join(' ')
-        area_counts = vdf['titulo_limpo'].value_counts().nlargest(15).reset_index()
-        area_counts.columns = ["Título Simplificado", "Contagem"]
+    with st.expander("Distribuição Geográfica e de Área das Vagas", expanded=True):
+        col_v1, col_v2 = st.columns(2)
         
-        fig_area = px.bar(
-            area_counts,
-            x="Contagem",
-            y="Título Simplificado",
-            orientation='h',
-            title="Top 15 Títulos de Vaga Simplificados",
-            color="Contagem",
-            color_continuous_scale=px.colors.sequential.Viridis,
-        )
-        fig_area.update_layout(yaxis={'categoryorder':'total ascending'}, xaxis_title="", yaxis_title="")
-        col_v1.plotly_chart(fig_area, use_container_width=True)
+        # Gráfico 1: Títulos/Áreas de Vaga (Col V1)
+        if "titulo_vaga" in vdf.columns and not vdf["titulo_vaga"].isna().all():
+            vdf['titulo_limpo'] = vdf['titulo_vaga'].astype(str).str.split().str[:3].str.join(' ')
+            area_counts = vdf['titulo_limpo'].value_counts().nlargest(15).reset_index()
+            area_counts.columns = ["Título Simplificado", "Contagem"]
+            
+            fig_area = px.bar(
+                area_counts,
+                x="Contagem",
+                y="Título Simplificado",
+                orientation='h',
+                title="Top 15 Títulos de Vaga (Simplificado)",
+                color="Contagem",
+                color_continuous_scale=px.colors.sequential.Viridis,
+            )
+            fig_area.update_layout(yaxis={'categoryorder':'total ascending'}, xaxis_title="", yaxis_title="")
+            col_v1.plotly_chart(fig_area, use_container_width=True)
+        else:
+             col_v1.info("Dados de Título de Vaga indisponíveis.")
 
-    # -----------------------------------------------------
-    # VAGAS: Distribuição por Local (Estado/Região)
-    # -----------------------------------------------------
-    if "estado" in vdf.columns:
-        location_counts = vdf["estado"].value_counts().nlargest(10).reset_index()
-        location_counts.columns = ["Estado", "Contagem"]
 
-        fig_loc = px.pie(
-            location_counts,
-            names="Estado",
-            values="Contagem",
-            title="Distribuição Top 10 Estados (Vagas)",
-        )
-        col_v2.plotly_chart(fig_loc, use_container_width=True)
+        # Gráfico 2: Distribuição por Local (Estado/Região) (Col V2)
+        if "estado" in vdf.columns and not vdf["estado"].isna().all():
+            location_counts = vdf["estado"].value_counts().nlargest(10).reset_index()
+            location_counts.columns = ["Estado", "Contagem"]
+
+            fig_loc = px.pie(
+                location_counts,
+                names="Estado",
+                values="Contagem",
+                title="Distribuição Top 10 Estados (Vagas)",
+            )
+            col_v2.plotly_chart(fig_loc, use_container_width=True)
+        else:
+            col_v2.info("Dados de localização (Estado) indisponíveis.")
 
 # --- PÁGINA DE MATCHING ---
 def page_matching(cdf: pd.DataFrame, vdf: pd.DataFrame, encoder: SentenceTransformer, bst: Any):

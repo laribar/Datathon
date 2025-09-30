@@ -810,7 +810,11 @@ def page_matching(cdf: pd.DataFrame, vdf: pd.DataFrame, encoder: SentenceTransfo
         st.info(f"Candidatos carregados: {len(cdf):,}")
         st.info(f"Vagas carregadas: {len(vdf):,}")
         st.info(f"Modelo: XGBoost")
-        st.info(f"Embeddings: {encoder.model_name}")
+        model_info = getattr(encoder, 'model_name_or_path', None)
+        if model_info is None and hasattr(encoder, 'tokenizer') and hasattr(encoder.tokenizer, 'name_or_path'):
+            model_info = encoder.tokenizer.name_or_path
+        
+        st.info(f"Embeddings: {model_info or 'all-MiniLM-L6-v2'}")
 
 
     # 2. SELEÇÃO DA VAGA (Vaga deve ter ID limpo devido à correção em load_data)

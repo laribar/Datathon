@@ -3,6 +3,7 @@ maxMessageSize = 600
 enableXsrfProtection = true
 enableCORS = true
 
+fileWatcherType = "none" 
 [client]
 showErrorDetails = true
 
